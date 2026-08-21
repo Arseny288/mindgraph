@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mindgraph"
+version = "1.0.0"
+description = "Смысловой оверлей поверх Python-репозитория: граф узлов в браузере."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "mindgraph" }]
+dependencies = [
+    "openai>=1.0",
+    "pathspec>=0.12",
+]
+
+[project.optional-dependencies]
+anthropic = ["anthropic>=0.40"]
+
+[project.scripts]
+mindgraph = "mindgraph.cli:main"
+
+[tool.setuptools]
+packages = ["mindgraph"]

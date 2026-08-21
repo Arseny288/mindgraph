@@ -1,0 +1,248 @@
+"""Тесты сборки graph.json (emit.py) на фикстуре, всё через --no-llm.
+
+Только package-proxy — LLM-путь требует сети/ключа и покрыт test_group.py на
+уровне чистых функций. Здесь проверяем именно контракт §5: вьюеру не должно
+понадобиться ничего досчитывать.
+"""
+
+import json
+import os
+import shutil
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from mindgraph import emit
+
+FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       "fixtures", "sample_repo")
+
+
+def _clean():
+    shutil.rmtree(os.path.join(FIXTURE, ".mindgraph"), ignore_errors=True)
+
+
+def _graph():
+    _clean()
+    return emit.build_graph(FIXTURE, no_llm=True)
+
+
+def test_schema_top_level_keys():
+    g = _graph()
+    assert set(g) == {"version", "grouping", "repo", "symbols", "symbol_edges",
+                      "nodes", "node_edges", "domains", "domain_edges",
+                      "stats", "warnings"}
+    assert g["version"] == 2
+    assert g["grouping"] == "package"  # --no-llm без существующей LLM-разметки
+
+
+def test_repo_meta():
+    g = _graph()
+    r = g["repo"]
+    assert r["name"] == "sample_repo"
+    assert r["root"] == os.path.abspath(FIXTURE)
+    assert r["repo_hash"].startswith("sha256:")
+    assert r["files"] == 6  # 6 распарсенных .py (broken.py пропущен)
+    assert r["loc"] > 0
+    assert r["generated_at"].endswith("Z")
+
+
+def test_every_symbol_has_node_shared_owners():
+    g = _graph()
+    for s in g["symbols"]:
+        assert "node" in s and s["node"] is not None
+        assert "shared" in s and isinstance(s["shared"], bool)
+        assert "owners" in s and isinstance(s["owners"], list)
+        # исходные поля extract.py тоже на месте — вьюеру ничего не искать самому
+        assert "sig" in s and "lines" in s and "kind" in s
+
+
+def test_nodes_are_structural_packages_in_no_llm():
+    g = _graph()
+    names = {n["name"] for n in g["nodes"]}
+    assert names == {"auth", "billing", "common", "cycle"}
+
+
+def test_node_membership_matches_symbol_node_field():
+    g = _graph()
+    by_node = {n["id"]: set(n["symbols"]) for n in g["nodes"]}
+    node_id_of_name = {n["name"]: n["id"] for n in g["nodes"]}
+    for s in g["symbols"]:
+        assert s["id"] in by_node[node_id_of_name[s["node"]]]
+
+
+def test_node_loc_is_sum_of_members():
+    g = _graph()
+    sym_by_id = {s["id"]: s for s in g["symbols"]}
+    for n in g["nodes"]:
+        assert n["loc"] == sum(sym_by_id[sid]["loc"] for sid in n["symbols"])
+
+
+def test_node_shared_count_matches_shared_symbols_only_real():
+    g = _graph()
+    sym_by_id = {s["id"]: s for s in g["symbols"]}
+    for n in g["nodes"]:
+        expected = sum(1 for sid in n["symbols"]
+                       if not sym_by_id[sid].get("synthetic") and sym_by_id[sid]["shared"])
+        assert n["shared_count"] == expected
+
+
+def test_node_edges_aggregate_and_weak_flag():
+    g = _graph()
+    node_id_of_name = {n["name"]: n["id"] for n in g["nodes"]}
+    node_of_symbol = {s["id"]: s["node"] for s in g["symbols"]}
+
+    expected: dict = {}
+    for e in g["symbol_edges"]:
+        a = node_id_of_name[node_of_symbol[e["from"]]]
+        b = node_id_of_name[node_of_symbol[e["to"]]]
+        if a == b:
+            continue
+        expected[(a, b)] = expected.get((a, b), 0) + e["weight"]
+
+    got = {(e["from"], e["to"]): e["weight"] for e in g["node_edges"]}
+    assert got == expected
+    for e in g["node_edges"]:
+        assert e["weak"] == (e["weight"] == 1)
+
+    # никаких само-рёбер между узлами (contains/uses внутри одного пакета не
+    # должны утечь как node_edge на себя)
+    assert all(e["from"] != e["to"] for e in g["node_edges"])
+
+
+def test_stats_consistent_with_symbols():
+    g = _graph()
+    real = [s for s in g["symbols"] if not s.get("synthetic")]
+    assert g["stats"]["symbols"] == len(real)
+    assert g["stats"]["shared_symbols"] == sum(1 for s in real if s["shared"])
+    assert g["stats"]["shared_ratio"] == g["stats"]["shared_symbols"] / g["stats"]["symbols"]
+    assert g["stats"]["unassigned"] == 0  # --no-llm: package-proxy не оставляет неразмеченных
+    assert g["stats"]["external"] == ["os"]
+
+
+def test_warnings_carry_syntax_error():
+    g = _graph()
+    assert any("broken.py" in w for w in g["warnings"])
+
+
+def test_write_graph_round_trips_as_valid_json():
+    _clean()
+    g = emit.build_graph(FIXTURE, no_llm=True)
+    path = emit.write_graph(FIXTURE, g)
+    assert path == emit.graph_path(FIXTURE)
+    with open(path, encoding="utf-8") as fh:
+        reloaded = json.load(fh)
+    assert reloaded == g
+
+
+def test_load_or_build_reuses_cache_on_matching_hash():
+    _clean()
+    g1, from_cache1 = emit.load_or_build(FIXTURE, no_llm=True)
+    assert from_cache1 is False
+    g2, from_cache2 = emit.load_or_build(FIXTURE, no_llm=True)
+    assert from_cache2 is True
+    assert g2["repo"]["repo_hash"] == g1["repo"]["repo_hash"]
+    assert g2["repo"]["generated_at"] == g1["repo"]["generated_at"]  # не пересчитывался
+
+
+def test_load_or_build_force_recomputes():
+    _clean()
+    g1, _ = emit.load_or_build(FIXTURE, no_llm=True)
+    time.sleep(1.1)  # generated_at — секундная точность
+    g2, from_cache = emit.load_or_build(FIXTURE, no_llm=True, force=True)
+    assert from_cache is False
+    assert g2["repo"]["generated_at"] != g1["repo"]["generated_at"]
+
+
+def test_load_or_build_invalidates_on_file_change():
+    _clean()
+    g1, _ = emit.load_or_build(FIXTURE, no_llm=True)
+    extra = os.path.join(FIXTURE, "cycle", "_temp_probe.py")
+    with open(extra, "w") as fh:
+        fh.write("x = 1\n")
+    try:
+        g2, from_cache = emit.load_or_build(FIXTURE, no_llm=True)
+        assert from_cache is False
+        assert g2["repo"]["repo_hash"] != g1["repo"]["repo_hash"]
+    finally:
+        os.remove(extra)
+
+
+def _write_llm_graph():
+    """Записать graph.json с фабричной LLM-разметкой: все символы в один
+    смысловой узел «Все смыслы» (вместо package-proxy)."""
+    _clean()
+    base = emit.build_graph(FIXTURE, no_llm=True)
+    base["nodes"] = [{
+        "id": "n_all", "name": "Все смыслы", "summary": "Тестовый смысловой узел.",
+        "symbols": sorted(s["id"] for s in base["symbols"]),
+        "files": sorted({s["file"] for s in base["symbols"]}),
+        "loc": sum(s["loc"] for s in base["symbols"]),
+        "shared_count": 0, "parent": "d_all",
+    }]
+    base["domains"] = [{"id": "d_all", "name": "Тестовый домен"}]
+    for s in base["symbols"]:
+        s["node"] = "Все смыслы"
+    base["node_edges"] = []
+    base["domain_edges"] = []
+    base["grouping"] = "llm"
+    emit.write_graph(FIXTURE, base)
+    return base
+
+
+def test_no_llm_preserves_existing_llm_nodes():
+    # §6: --no-llm НЕ должен затирать LLM-разметку — только пересчитать статику.
+    _write_llm_graph()
+    g, from_cache = emit.load_or_build(FIXTURE, no_llm=True, force=True)
+    assert from_cache is False
+    assert g["grouping"] == "llm"
+    names = {n["name"] for n in g["nodes"]}
+    assert "Все смыслы" in names
+    assert "auth" not in names  # не откатились на package-proxy
+    auth = next(s for s in g["symbols"] if s["id"] == "auth.login.verify_token")
+    assert auth["node"] == "Все смыслы"
+    all_node = next(n for n in g["nodes"] if n["name"] == "Все смыслы")
+    assert all_node["summary"] == "Тестовый смысловой узел."
+    assert all_node["parent"] == "d_all"  # домены тоже сохранены
+
+
+def test_force_without_regroup_preserves_llm_nodes():
+    # Тот же сценарий, что и баг «--force --no-llm затёр 12 узлов»: --force сам
+    # по себе тоже не платный regroup — LLM-узлы остаются на месте.
+    _write_llm_graph()
+    g, from_cache = emit.load_or_build(FIXTURE, force=True)
+    assert from_cache is False
+    assert g["grouping"] == "llm"
+    assert "Все смыслы" in {n["name"] for n in g["nodes"]}
+
+
+def test_regroup_bypasses_cache():
+    # --regroup — явный полный пересчёт, игнорирует актуальный кэш.
+    _clean()
+    g1, _ = emit.load_or_build(FIXTURE, no_llm=True)
+    time.sleep(1.1)  # generated_at — секундная точность
+    g2, from_cache = emit.load_or_build(FIXTURE, no_llm=True, regroup=True)
+    assert from_cache is False
+    assert g2["repo"]["generated_at"] != g1["repo"]["generated_at"]
+
+
+def _run():
+    _clean()
+    tests = [v for k, v in sorted(globals().items())
+             if k.startswith("test_") and callable(v)]
+    failed = 0
+    for t in tests:
+        try:
+            t()
+            print(f"  ok   {t.__name__}")
+        except AssertionError as e:
+            failed += 1
+            print(f"  FAIL {t.__name__}: {e}")
+    _clean()
+    print(f"\n{len(tests) - failed}/{len(tests)} passed")
+    return failed
+
+
+if __name__ == "__main__":
+    sys.exit(1 if _run() else 0)
