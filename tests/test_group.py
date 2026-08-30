@@ -47,6 +47,11 @@ class FakeProvider(LLMProvider):
         self.usage = usage or {"input_tokens": 100, "output_tokens": 50,
                                "cache_read_tokens": 0, "cache_write_tokens": 0, "raw": {}}
         self.calls = []
+        self.completions = []
+
+    def complete(self, system, user, max_tokens=None):
+        self.completions.append((system, user))
+        return {"text": self.text, "usage": self.usage}
 
     def group(self, symbols, edges, node_count=None):
         self.calls.append((symbols, edges, node_count))

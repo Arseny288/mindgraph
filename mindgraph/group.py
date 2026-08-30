@@ -11,8 +11,11 @@
 символов и рёбер), volatile-части сейчас нет — весь граф статичен на один
 прогон. Это даёт DeepSeek стабильный кэшируемый префикс "из коробки".
 
-Батчинг не реализован: контекст обоих провайдеров (DeepSeek v4 — 1M,
-Anthropic — 1M) вмещает любую нашу репу одним запросом (см. §3 спеки).
+Батчинг (§3 спеки): если реальных символов больше ``BATCH_MAX_SYMBOLS``,
+разбиваем их на батчи ПО МОДУЛЯМ (детерминированно), группируем каждый батч
+обычным промптом, затем ВТОРЫМ запросом (``_merge_nodes``) сливаем близкие
+узлы по имени и summary. Частичный отказ батча (невалидный ответ) не роняет
+прогон: символы батча уходят в ``UNASSIGNED_NODE`` с warning.
 
 **Тела функций в промпт никогда не уходят** — только `id`, `sig`, `doc` и
 рёбра между id.
@@ -34,6 +37,9 @@ DEEPSEEK_MODEL = "deepseek-v4-flash"
 ANTHROPIC_MODEL = "claude-opus-5"  # см. заметку в docstring AnthropicProvider
 
 UNASSIGNED_NODE = "Прочее"
+
+# Порог: если реальных символов больше — группируем батчами (§3 спеки).
+BATCH_MAX_SYMBOLS = 1500
 
 _SYSTEM_PROMPT_TEMPLATE = """Сгруппируй символы Python-репозитория в {count_spec} смысловых узлов по НАЗНАЧЕНИЮ,
 а не по расположению в файлах. Один узел обычно размазан по нескольким
@@ -109,6 +115,14 @@ class LLMProvider(ABC):
     """
 
     @abstractmethod
+    def complete(self, system: str, user: str, max_tokens: int | None = None) -> dict:
+        """Универсальный вызов: ``{"text", "usage"}`` по произвольному промпту.
+
+        ``group`` — частный случай (промпт группировки); ``complete`` нужен
+        для второго запроса батчинга (слияние узлов) и любых будущих шагов.
+        """
+
+    @abstractmethod
     def group(self, symbols, edges, node_count: int | None = None) -> dict:
         """Вернуть ``{"text": <сырой ответ модели>, "usage": {...}}``.
 
@@ -134,7 +148,7 @@ class DeepSeekProvider(LLMProvider):
     name = "deepseek"
 
     def __init__(self, api_key: str | None = None, model: str = DEEPSEEK_MODEL,
-                 base_url: str = DEEPSEEK_BASE_URL, max_tokens: int = 8000,
+                 base_url: str = DEEPSEEK_BASE_URL, max_tokens: int = 32000,
                  temperature: float = 0):
         key = api_key or os.environ.get("DEEPSEEK_API_KEY")
         if not key:
@@ -146,15 +160,14 @@ class DeepSeekProvider(LLMProvider):
         self.max_tokens = max_tokens
         self.temperature = temperature
 
-    def group(self, symbols, edges, node_count: int | None = None) -> dict:
-        user_prompt = _build_user_prompt(symbols, edges)
+    def complete(self, system: str, user: str, max_tokens: int | None = None) -> dict:
         resp = self._client.chat.completions.create(
             model=self.model,
             messages=[
-                {"role": "system", "content": _system_prompt(node_count)},
-                {"role": "user", "content": user_prompt},
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
             ],
-            max_tokens=self.max_tokens,
+            max_tokens=max_tokens or self.max_tokens,
             temperature=self.temperature,
             extra_body={"thinking": {"type": "disabled"}},
         )
@@ -171,6 +184,10 @@ class DeepSeekProvider(LLMProvider):
                 "raw": u.model_dump() if hasattr(u, "model_dump") else dict(u),
             })
         return {"text": text, "usage": usage}
+
+    def group(self, symbols, edges, node_count: int | None = None) -> dict:
+        return self.complete(_system_prompt(node_count),
+                             _build_user_prompt(symbols, edges))
 
 
 class AnthropicProvider(LLMProvider):
@@ -189,21 +206,20 @@ class AnthropicProvider(LLMProvider):
     name = "anthropic"
 
     def __init__(self, api_key: str | None = None, model: str = ANTHROPIC_MODEL,
-                 max_tokens: int = 8000):
+                 max_tokens: int = 32000):
         key = api_key or os.environ.get("ANTHROPIC_API_KEY")
         import anthropic  # ленивый импорт
         self._client = anthropic.Anthropic(api_key=key) if key else anthropic.Anthropic()
         self.model = model
         self.max_tokens = max_tokens
 
-    def group(self, symbols, edges, node_count: int | None = None) -> dict:
-        user_prompt = _build_user_prompt(symbols, edges)
+    def complete(self, system: str, user: str, max_tokens: int | None = None) -> dict:
         resp = self._client.messages.create(
             model=self.model,
-            max_tokens=self.max_tokens,
-            system=_system_prompt(node_count),
+            max_tokens=max_tokens or self.max_tokens,
+            system=system,
             output_config={"effort": "low"},
-            messages=[{"role": "user", "content": user_prompt}],
+            messages=[{"role": "user", "content": user}],
         )
         text = "".join(b.text for b in resp.content if b.type == "text")
         u = resp.usage
@@ -217,6 +233,10 @@ class AnthropicProvider(LLMProvider):
                 "raw": u.model_dump() if hasattr(u, "model_dump") else dict(u),
             })
         return {"text": text, "usage": usage}
+
+    def group(self, symbols, edges, node_count: int | None = None) -> dict:
+        return self.complete(_system_prompt(node_count),
+                             _build_user_prompt(symbols, edges))
 
 
 PROVIDERS = {"deepseek": DeepSeekProvider, "anthropic": AnthropicProvider}
@@ -363,9 +383,247 @@ def node_map(nodes: list) -> dict:
     return {sid: n["name"] for n in nodes for sid in n["symbols"]}
 
 
+# --- Батчинг (§3 спеки) -----------------------------------------------------
+
+_MERGE_SYSTEM_PROMPT = """Слей узлы графа кода, полученные из разных частей репозитория, в 5-15
+смысловых узлов по НАЗНАЧЕНИЮ. Узлы с похожим назначением (по name и
+summary) объединяй в один; узлы с разным назначением оставляй разными.
+
+Имена итоговых узлов — короткие, на русском, в терминах предметной области.
+
+Каждый узел из списка обязан попасть ровно в один итоговый узел.
+
+Ответь СТРОГО JSON, без markdown-заграждений (```), без преамбулы и без
+пояснений до или после. Формат ответа:
+
+{"nodes": [{"name": "Аутентификация",
+            "summary": "одно предложение о назначении",
+            "nodes": ["b0", "b3"]}]}
+"""
+
+
+def _add_usage(total: dict, usage: dict) -> None:
+    for k in ("input_tokens", "output_tokens", "cache_read_tokens",
+              "cache_write_tokens"):
+        total[k] += usage.get(k, 0) or 0
+
+
+def _cached(provider: LLMProvider, cache_base, system: str, user: str, call):
+    """Выполнить ``call()`` с кэшем по (provider, model, system, user)."""
+    cache_key = None
+    if cache_base is not None and hasattr(provider, "name") \
+            and hasattr(provider, "model"):
+        cache_key = llmcache.prompt_key(provider.name, provider.model,
+                                        system, user)
+        cached = llmcache.load(cache_base, cache_key)
+        if cached is not None:
+            return cached
+    result = call()
+    if cache_key is not None:
+        llmcache.save(cache_base, cache_key, result["text"], result["usage"],
+                      provider.name, provider.model)
+    return result
+
+
+def _split_by_module(real_symbols: list, batch_max: int) -> list:
+    """Детерминированное разбиение по модулям: одинаковый вход -> одинаковые батчи.
+
+    Символы группируются по ``file`` (модуль), файлы идут в лексикографическом
+    порядке, внутри файла — по id. Модули пакуются в батчи так, чтобы суммарно
+    не превышать ``batch_max`` символов; модуль крупнее лимита режется сам.
+    """
+    by_file: dict = {}
+    for s in real_symbols:
+        by_file.setdefault(s["file"], []).append(s)
+
+    batches: list = []
+    cur: list = []
+    cur_count = 0
+    for f in sorted(by_file):
+        syms = sorted(by_file[f], key=lambda s: s["id"])
+        n = len(syms)
+        if n > batch_max:
+            if cur:
+                batches.append(cur)
+                cur, cur_count = [], 0
+            for i in range(0, n, batch_max):
+                batches.append(syms[i:i + batch_max])
+        elif cur and cur_count + n > batch_max:
+            batches.append(cur)
+            cur, cur_count = list(syms), n
+        else:
+            cur.extend(syms)
+            cur_count += n
+    if cur:
+        batches.append(cur)
+    return batches
+
+
+def _merge_by_name(batch_nodes: list) -> list:
+    """Детерминированная склейка без LLM: одинаковые имена -> один узел."""
+    groups: dict = {}
+    for bn in batch_nodes:
+        groups.setdefault(bn["name"], []).append(bn)
+    final = []
+    for name, members in sorted(groups.items()):
+        symbols = []
+        for m in members:
+            symbols.extend(m["symbols"])
+        final.append({"name": name, "summary": members[0]["summary"],
+                      "symbols": symbols})
+    return final
+
+
+def _finalize_merge(parsed, batch_nodes: list, warnings: list) -> list | None:
+    """Ответ слияния -> итоговые узлы; None, если структура невалидна."""
+    ref_by_node = {bn["ref"]: bn for bn in batch_nodes}
+    valid_refs = set(ref_by_node)
+    raw = parsed.get("nodes") if isinstance(parsed, dict) else None
+    if not isinstance(raw, list):
+        return None
+
+    final = []
+    assigned = set()
+    for rn in raw:
+        if not isinstance(rn, dict) or "name" not in rn:
+            warnings.append(f"пропущен некорректный итоговый узел слияния: {rn!r}")
+            continue
+        refs = [r for r in rn.get("nodes", [])
+                if r in valid_refs and r not in assigned]
+        # защита от дублей ref в одном ответе (модель может повторить)
+        refs = list(dict.fromkeys(refs))
+        if not refs:
+            continue
+        symbols = []
+        for r in refs:
+            assigned.add(r)
+            symbols.extend(ref_by_node[r]["symbols"])
+        final.append({"name": rn["name"], "summary": rn.get("summary", ""),
+                      "symbols": symbols})
+
+    for r in sorted(valid_refs - assigned):
+        bn = ref_by_node[r]
+        final.append({"name": bn["name"], "summary": bn["summary"],
+                      "symbols": list(bn["symbols"])})
+    return final
+
+
+def _merge_nodes(batch_nodes: list, provider: LLMProvider, cache_base):
+    """Второй запрос: слить узлы батчей. Отказ -> детерминированная склейка по именам."""
+    system = _MERGE_SYSTEM_PROMPT
+    user = json.dumps(
+        {"nodes": [{"ref": bn["ref"], "name": bn["name"],
+                    "summary": bn["summary"], "count": len(bn["symbols"])}
+                   for bn in batch_nodes]},
+        ensure_ascii=False, sort_keys=True)
+    warnings = []
+
+    try:
+        result = _cached(provider, cache_base, system, user,
+                         lambda: provider.complete(system, user, max_tokens=2000))
+    except Exception as e:
+        warnings.append(f"слияние батчей не удалось ({e}); склеиваю по именам")
+        return _merge_by_name(batch_nodes), warnings, _empty_usage(), ""
+
+    parsed, err = _parse_json_response(result["text"])
+    if err:
+        warnings.append(f"слияние батчей: {err}; склеиваю по именам")
+        return _merge_by_name(batch_nodes), warnings, result["usage"], result["text"]
+
+    final = _finalize_merge(parsed, batch_nodes, warnings)
+    if final is None:
+        warnings.append("ответ слияния не содержит списка nodes; склеиваю по именам")
+        final = _merge_by_name(batch_nodes)
+    return final, warnings, result["usage"], result["text"]
+
+
+def _group_single(symbols, edges, provider: LLMProvider, node_count, cache_base,
+                  real_ids: set):
+    """Один вызов группировки (не батчинг) -> (nodes, warnings, usage, raw_text)."""
+    system = _system_prompt(node_count)
+    user = _build_user_prompt(symbols, edges)
+    result = _cached(provider, cache_base, system, user,
+                     lambda: provider.group(symbols, edges,
+                                            node_count=node_count))
+    warnings = []
+    parsed, err = _parse_json_response(result["text"])
+    if err:
+        warnings.append(err)
+        parsed = {"nodes": []}
+    nodes = _validate_and_bucket(parsed, real_ids, warnings)
+    return nodes, warnings, result["usage"], result["text"]
+
+
+def _group_batched(symbols, edges, real: list, provider: LLMProvider, node_count,
+                   cache_base, batch_max: int):
+    """Батчинг: разбить, сгруппировать каждый батч, слить вторым запросом."""
+    batches = _split_by_module(real, batch_max)
+    warnings = []
+    batch_nodes = []
+    total_usage = _empty_usage()
+    raw_texts = []
+    ref_counter = 0
+
+    for i, batch in enumerate(batches):
+        batch_ids = {s["id"] for s in batch}
+        batch_edges = [e for e in edges
+                       if e["from"] in batch_ids and e["to"] in batch_ids]
+        system = _system_prompt(node_count)
+        user = _build_user_prompt(batch, batch_edges)
+        try:
+            result = _cached(
+                provider, cache_base, system, user,
+                lambda b=batch, be=batch_edges: provider.group(b, be, node_count=node_count))
+        except Exception as e:
+            warnings.append(f"батч {i + 1}/{len(batches)} не сгруппирован "
+                            f"({e}); символы батча уходят в {UNASSIGNED_NODE}")
+            continue
+        parsed, err = _parse_json_response(result["text"])
+        if err:
+            warnings.append(f"батч {i + 1}/{len(batches)}: {err}; "
+                            f"символы батча уходят в {UNASSIGNED_NODE}")
+            continue
+        bnodes = _validate_and_bucket(parsed, batch_ids, warnings)
+        for bn in bnodes:
+            batch_nodes.append({"ref": f"n{ref_counter}", "name": bn["name"],
+                                "summary": bn.get("summary", ""),
+                                "symbols": bn["symbols"]})
+            ref_counter += 1
+        _add_usage(total_usage, result["usage"])
+        raw_texts.append(result["text"])
+
+    # Символы упавших батчей (частичный отказ) тоже собираем в UNASSIGNED_NODE.
+    assigned = {sid for bn in batch_nodes for sid in bn["symbols"]}
+    missing = {s["id"] for s in real} - assigned
+
+    # «Прочее» (отказы/неназначенные) НЕ сливаем вторым запросом — это
+    # служебный узел-накопитель, он всегда остаётся отдельным.
+    merge_nodes = [bn for bn in batch_nodes if bn["name"] != UNASSIGNED_NODE]
+    unassigned = sorted({sid for bn in batch_nodes
+                         if bn["name"] == UNASSIGNED_NODE for sid in bn["symbols"]}
+                        | missing)
+
+    if len(merge_nodes) > 1:
+        nodes, mwarnings, musage, mtext = _merge_nodes(merge_nodes, provider,
+                                                       cache_base)
+        warnings.extend(mwarnings)
+        _add_usage(total_usage, musage)
+        raw_texts.append(mtext)
+    else:
+        nodes = [{"name": bn["name"], "summary": bn["summary"],
+                  "symbols": list(bn["symbols"])} for bn in merge_nodes]
+
+    if unassigned:
+        nodes.append({"name": UNASSIGNED_NODE,
+                      "summary": "Символы, не попавшие ни в один смысловой узел.",
+                      "symbols": unassigned})
+
+    return nodes, warnings, total_usage, "\n\n".join(raw_texts)
+
+
 def group_repo(symbols, edges, provider: LLMProvider, node_count: int | None = None,
-               cache_base=None) -> dict:
-    """Оркестрация этапа B: один вызов провайдера + общий парсинг/валидация.
+               cache_base=None, batch_max: int = BATCH_MAX_SYMBOLS) -> dict:
+    """Оркестрация этапа B: группировка (с батчингом по спеке §3) + валидация.
 
     ``node_count`` — прокинуть точное K вместо дефолтного диапазона 5-15
     (контрольные прогоны на фиксированной гранулярности).
@@ -374,37 +632,25 @@ def group_repo(symbols, edges, provider: LLMProvider, node_count: int | None = N
     провайдер несёт атрибуты ``name``/``model``, ответ кэшируется по хэшу
     промпта и повторный вызов с тем же графом не ходит в API.
 
+    ``batch_max`` — порог батчинга: реальных символов больше лимита -> разбиение
+    по модулям + второй запрос слияния (§3 спеки). Одинаковый вход всегда даёт
+    одинаковые батчи (детерминизм), частичный отказ батча не роняет прогон.
+
     Возвращает ``{"nodes": [...], "unassigned_count", "warnings", "usage",
     "raw_text"}``. ``nodes`` уже включает синтетические <module> (см.
     :func:`_assign_synthetic_modules`) — готов для :func:`node_map`.
-    ``raw_text`` — сырой ответ модели, для сохранения/отладки контрольных
-    прогонов, которые не должны требовать повторного платного вызова.
+    ``raw_text`` — сырой(е) ответ(ы) модели, для сохранения/отладки.
     """
-    real_ids = {s["id"] for s in symbols if not s.get("synthetic")}
+    real = [s for s in symbols if not s.get("synthetic")]
+    real_ids = {s["id"] for s in real}
 
-    system = _system_prompt(node_count)
-    user = _build_user_prompt(symbols, edges)
-    cache_key = None
-    result = None
+    if len(real) <= batch_max:
+        nodes, warnings, usage, raw_text = _group_single(
+            symbols, edges, provider, node_count, cache_base, real_ids)
+    else:
+        nodes, warnings, usage, raw_text = _group_batched(
+            symbols, edges, real, provider, node_count, cache_base, batch_max)
 
-    if cache_base is not None and hasattr(provider, "name") \
-            and hasattr(provider, "model"):
-        cache_key = llmcache.prompt_key(provider.name, provider.model, system, user)
-        result = llmcache.load(cache_base, cache_key)
-
-    if result is None:
-        result = provider.group(symbols, edges, node_count=node_count)
-        if cache_key is not None:
-            llmcache.save(cache_base, cache_key, result["text"], result["usage"],
-                          provider.name, provider.model)
-
-    warnings: list = []
-    parsed, err = _parse_json_response(result["text"])
-    if err:
-        warnings.append(err)
-        parsed = {"nodes": []}
-
-    nodes = _validate_and_bucket(parsed, real_ids, warnings)
     # Индикатор качества группировки — считаем ДО приписывания синтетических
     # <module>: те попадают в UNASSIGNED_NODE через majority vote (см.
     # _assign_synthetic_modules), а не потому что модель их не разгруппировала
@@ -418,6 +664,6 @@ def group_repo(symbols, edges, provider: LLMProvider, node_count: int | None = N
         "nodes": nodes,
         "unassigned_count": unassigned_count,
         "warnings": warnings,
-        "usage": result["usage"],
-        "raw_text": result["text"],
+        "usage": usage,
+        "raw_text": raw_text,
     }
