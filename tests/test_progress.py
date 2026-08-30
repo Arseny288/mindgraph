@@ -49,7 +49,7 @@ def test_batch_progress_logged(caplog):
 
 def test_cli_verbose_logs_to_stderr_and_stdout_stays_clean():
     proc = subprocess.run(
-        [sys.executable, "-m", "mindgraph.cli", FIXTURE,
+        [sys.executable, "-m", "mindgraph.cli", "scan", FIXTURE,
          "--no-llm", "--force", "--verbose"],
         capture_output=True, text=True)
     assert proc.returncode == 0
