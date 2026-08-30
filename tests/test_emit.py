@@ -169,6 +169,42 @@ def test_load_or_build_invalidates_on_file_change():
         os.remove(extra)
 
 
+def test_config_fingerprint_present_and_stable():
+    _clean()
+    g1, _ = emit.load_or_build(FIXTURE, no_llm=True)
+    assert g1["repo"]["config_fingerprint"].startswith("cfg:")
+    g2, _ = emit.load_or_build(FIXTURE, no_llm=True)
+    assert g2["repo"]["config_fingerprint"] == g1["repo"]["config_fingerprint"]
+
+
+def test_model_change_invalidates_cache():
+    # 0.3: смена модели/провайдера НЕ должна молча вернуть старый graph.json.
+    _clean()
+    g1, _ = emit.load_or_build(FIXTURE, no_llm=True)
+    g2, from_cache = emit.load_or_build(FIXTURE, no_llm=True,
+                                        model="deepseek-v4-pro")
+    assert from_cache is False
+    assert g2["repo"]["config_fingerprint"] != g1["repo"]["config_fingerprint"]
+
+
+def test_provider_change_invalidates_cache():
+    _clean()
+    g1, _ = emit.load_or_build(FIXTURE, no_llm=True, provider_name="deepseek")
+    g2, from_cache = emit.load_or_build(FIXTURE, no_llm=True,
+                                        provider_name="anthropic")
+    assert from_cache is False
+    assert g2["repo"]["config_fingerprint"] != g1["repo"]["config_fingerprint"]
+
+
+def test_entry_points_change_invalidates_cache():
+    _clean()
+    g1, _ = emit.load_or_build(FIXTURE, no_llm=True)
+    g2, from_cache = emit.load_or_build(FIXTURE, no_llm=True,
+                                        entry_points=["app.py"])
+    assert from_cache is False
+    assert g2["repo"]["config_fingerprint"] != g1["repo"]["config_fingerprint"]
+
+
 def _write_llm_graph():
     """Записать graph.json с фабричной LLM-разметкой: все символы в один
     смысловой узел «Все смыслы» (вместо package-proxy)."""

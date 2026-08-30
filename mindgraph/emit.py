@@ -19,9 +19,10 @@ import os
 import re
 from datetime import datetime, timezone
 
-from .domains import assign_domains, UNASSIGNED_DOMAIN
+from .domains import assign_domains, UNASSIGNED_DOMAIN, _DOMAIN_SYSTEM_PROMPT
 from .extract import extract_repo, _iter_python_files, _iter_ignore_files, _rel
-from .group import group_repo, make_provider, node_map, UNASSIGNED_NODE
+from .group import (group_repo, make_provider, node_map, UNASSIGNED_NODE,
+                    _system_prompt, DEEPSEEK_MODEL, ANTHROPIC_MODEL)
 from .shared import node_of, compute_owners_by_node, ENTRY_POINT_PATTERNS, _is_entry_point
 
 GRAPH_VERSION = 2  # +domains, +domain_edges, +node.parent, +grouping (аддитивно, §5 спеки)
@@ -29,6 +30,46 @@ GRAPH_VERSION = 2  # +domains, +domain_edges, +node.parent, +grouping (адди�
 
 def graph_path(root: str) -> str:
     return os.path.join(os.path.abspath(root), ".mindgraph", "graph.json")
+
+
+def _resolve_model(provider_name: str, model: str | None) -> str:
+    """Эффективная модель провайдера (явная или дефолтная по провайдеру)."""
+    if model:
+        return model
+    return DEEPSEEK_MODEL if provider_name == "deepseek" else ANTHROPIC_MODEL
+
+
+def compute_config_fingerprint(provider_name: str, model: str | None,
+                               entry_points, node_min: int, node_max: int,
+                               no_llm: bool) -> str:
+    """Хэш эффективного конфига, влияющего на результат сборки graph.json.
+
+    ``repo_hash`` покрывает ТОЛЬКО исходники (что читаем); этот хэш покрывает
+    КАК читаем (провайдер, модель, версии промптов, entry_points, диапазон
+    узлов, версия extractor'а/схемы). Смена любого из них должна инвалидировать
+    кэш наравне с правкой кода: старый graph.json со старой группировкой и
+    owners нельзя молча переиспользовать.
+
+    Версии промптов берутся не константой, а хэшем РЕАЛЬНОГО текста промптов —
+    правка системного промпта в group.py/domains.py сама меняет fingerprint
+    без ручной синхронизации счётчика.
+    """
+    grouping_prompt = _system_prompt()  # node_count=None -> диапазон "5-15"
+    h = hashlib.sha256()
+    for part in (
+        provider_name,
+        _resolve_model(provider_name, model),
+        "\n".join(entry_points),
+        str(node_min),
+        str(node_max),
+        "no-llm" if no_llm else "llm",
+        grouping_prompt,
+        _DOMAIN_SYSTEM_PROMPT,
+        f"schema:{GRAPH_VERSION}",
+    ):
+        h.update(part.encode("utf-8"))
+        h.update(b"\x00")
+    return "cfg:" + h.hexdigest()[:24]
 
 
 def compute_repo_hash(root: str, extra_ignore=()) -> str:
@@ -168,7 +209,9 @@ def build_graph(root: str, provider_name: str = "deepseek", no_llm: bool = False
                 extra_ignore=(),
                 model: str | None = None,
                 cache_base=None,
-                entry_points=None) -> dict:
+                entry_points=None,
+                node_min: int = 5, node_max: int = 15,
+                config_fingerprint: str | None = None) -> dict:
     """Extract -> (group) -> shared -> единый graph.json (в памяти, без записи).
 
     Если LLM-провайдер недоступен (нет ключа/пакета) и ``no_llm`` не
@@ -184,13 +227,19 @@ def build_graph(root: str, provider_name: str = "deepseek", no_llm: bool = False
 
     ``model`` — переопределение дефолтной модели провайдера; ``cache_base`` —
     каталог кэша LLM-ответов (см. llmcache.py); ``entry_points`` — glob-паттерны
-    точек входа (по умолчанию ENTRY_POINT_PATTERNS).
+    точек входа (по умолчанию ENTRY_POINT_PATTERNS); ``config_fingerprint`` —
+    хэш эффективного конфига (см. compute_config_fingerprint), пишется в
+    ``repo`` и сверяется при загрузке кэша (иначе смена провайдера/модели
+    молча вернула бы старую группировку).
     """
     root = os.path.abspath(root)
     extracted = extract_repo(root, extra_ignore)
     symbols, symbol_edges = extracted["symbols"], extracted["symbol_edges"]
     warnings = list(extracted["warnings"])
     entry_patterns = ENTRY_POINT_PATTERNS if entry_points is None else entry_points
+    if config_fingerprint is None:
+        config_fingerprint = compute_config_fingerprint(
+            provider_name, model, entry_patterns, node_min, node_max, no_llm)
 
     node_of_symbol: dict = {}
     node_meta: dict = {}
@@ -314,6 +363,7 @@ def build_graph(root: str, provider_name: str = "deepseek", no_llm: bool = False
             "root": root,
             "name": os.path.basename(root.rstrip("/")) or root,
             "repo_hash": repo_hash or compute_repo_hash(root, extra_ignore),
+            "config_fingerprint": config_fingerprint,
             "files": len({s["file"] for s in symbols}),
             "loc": _repo_loc(root, extra_ignore),
             "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -345,18 +395,23 @@ def write_graph(root: str, graph: dict) -> str:
 
 def load_or_build(root: str, provider_name: str = "deepseek", no_llm: bool = False,
                   force: bool = False, regroup: bool = False, extra_ignore=(),
-                  model: str | None = None, cache_base=None, entry_points=None):
+                  model: str | None = None, cache_base=None, entry_points=None,
+                  node_min: int = 5, node_max: int = 15):
     """Вернуть ``(graph, from_cache: bool)``. Пишет на диск при пересчёте.
 
-    Cache-first: если ``repo_hash`` в ``.mindgraph/graph.json`` совпал с текущим
-    и нет ``--force``/``--regroup`` — возвращаем кэш без пересчёта. Защита
-    LLM-разметки (§6): ``--no-llm`` (и обычный пересчёт при изменившемся хэше
-    без ``--regroup``) пересчитывает только статику, а существующие узлы модели
-    оставляет на месте. Полный пересчёт — только ``--regroup`` (и он бесплатен
-    при неизменном коде — кэш LLM-ответов по хэшу промпта).
+    Cache-first: если ``repo_hash`` И ``config_fingerprint`` в
+    ``.mindgraph/graph.json`` совпали с текущими и нет ``--force``/``--regroup`` —
+    возвращаем кэш без пересчёта. Защита LLM-разметки (§6): ``--no-llm`` (и
+    обычный пересчёт при изменившемся хэше без ``--regroup``) пересчитывает
+    только статику, а существующие узлы модели оставляет на месте. Полный
+    пересчёт — только ``--regroup`` (и он бесплатен при неизменном коде — кэш
+    LLM-ответов по хэшу промпта).
     """
     root = os.path.abspath(root)
     current_hash = compute_repo_hash(root, extra_ignore)
+    resolved_ep = ENTRY_POINT_PATTERNS if entry_points is None else entry_points
+    current_fingerprint = compute_config_fingerprint(
+        provider_name, model, resolved_ep, node_min, node_max, no_llm)
     path = graph_path(root)
 
     existing = None
@@ -373,13 +428,16 @@ def load_or_build(root: str, provider_name: str = "deepseek", no_llm: bool = Fal
         graph = build_graph(root, provider_name=provider_name, no_llm=False,
                             repo_hash=current_hash, extra_ignore=extra_ignore,
                             model=model, cache_base=cache_base,
-                            entry_points=entry_points)
+                            entry_points=entry_points,
+                            node_min=node_min, node_max=node_max,
+                            config_fingerprint=current_fingerprint)
         write_graph(root, graph)
         return graph, False
 
-    # Кэш актуален и --force не задан — переиспользуем без пересчёта.
+    # Кэш актуален (код И конфиг не менялись) и --force не задан.
     if not force and existing is not None \
-            and existing.get("repo", {}).get("repo_hash") == current_hash:
+            and existing.get("repo", {}).get("repo_hash") == current_hash \
+            and existing.get("repo", {}).get("config_fingerprint") == current_fingerprint:
         return existing, True
 
     # Пересчёт статики. Если в graph.json уже есть LLM-узлы — переносим их
@@ -390,12 +448,16 @@ def load_or_build(root: str, provider_name: str = "deepseek", no_llm: bool = Fal
         graph = build_graph(root, provider_name=provider_name, no_llm=True,
                             repo_hash=current_hash, preserve_from=preserve_from,
                             extra_ignore=extra_ignore, model=model,
-                            cache_base=cache_base, entry_points=entry_points)
+                            cache_base=cache_base, entry_points=entry_points,
+                            node_min=node_min, node_max=node_max,
+                            config_fingerprint=current_fingerprint)
     else:
         graph = build_graph(root, provider_name=provider_name, no_llm=no_llm,
                             repo_hash=current_hash, extra_ignore=extra_ignore,
                             model=model, cache_base=cache_base,
-                            entry_points=entry_points)
+                            entry_points=entry_points,
+                            node_min=node_min, node_max=node_max,
+                            config_fingerprint=current_fingerprint)
 
     write_graph(root, graph)
     return graph, False

@@ -144,7 +144,8 @@ def main(argv=None) -> int:
         root, provider_name=config.provider, no_llm=config.no_llm,
         force=args.force, regroup=args.regroup, extra_ignore=config.ignore,
         model=config.model, cache_base=cache_base,
-        entry_points=config.entry_points)
+        entry_points=config.entry_points,
+        node_min=config.node_min, node_max=config.node_max)
 
     path = emit.graph_path(root)
     if from_cache:
