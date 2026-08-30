@@ -52,16 +52,30 @@ def test_viewer_resources_are_inside_package():
         os.path.dirname(vdir))
     for name in ("index.html", "main.jsx", "nodes.jsx", "theme.js"):
         assert os.path.isfile(os.path.join(vdir, name)), f"нет ассета {name}"
+    for name in ("app.js", "reactflow.css"):
+        assert os.path.isfile(os.path.join(vdir, "dist", name)), f"нет бандла {name}"
+
+
+def test_no_cdn_references_in_viewer():
+    """0.2: вьюер не должен тянуть react/reactflow/dagre с CDN на рантайме."""
+    vdir = serve.viewer_dir()
+    banned = ("esm.sh", "unpkg.com", "cdn.")
+    for name in ("index.html", "dist/app.js"):
+        content = open(os.path.join(vdir, name), encoding="utf-8").read()
+        for token in banned:
+            assert token not in content, f"{name} ссылается на CDN: {token}"
 
 
 def test_index_served(server):
     status, body = _get(server, "/")
     assert status == 200
     assert b"<title>mindgraph</title>" in body
+    assert b"dist/app.js" in body
 
 
 def test_static_assets_served(server):
-    for name in ("main.jsx", "nodes.jsx", "theme.js"):
+    for name in ("main.jsx", "nodes.jsx", "theme.js",
+                 "dist/app.js", "dist/reactflow.css"):
         status, body = _get(server, f"/{name}")
         assert status == 200, f"/{name} -> {status}"
         assert body, f"/{name} пустое тело"

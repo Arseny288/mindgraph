@@ -18,8 +18,8 @@
 // Без JSX/сборки: см. комментарий в main.jsx — расширение .jsx оставлено
 // ради совпадения со структурой спеки, реальный код — React.createElement.
 
-import React, { useEffect, useRef } from "https://esm.sh/react@18";
-import { Handle, Position } from "https://esm.sh/reactflow@11?deps=react@18,react-dom@18";
+import React, { useEffect, useRef } from "react";
+import { Handle, Position } from "reactflow";
 
 const h = React.createElement;
 const HIDDEN_HANDLE = { opacity: 0 };

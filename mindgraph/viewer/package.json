@@ -1,0 +1,19 @@
+{
+  "name": "mindgraph-viewer",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Статика вьюера mindgraph: бандлится esbuild'ом в dist/, без CDN на рантайме.",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "dependencies": {
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "reactflow": "11.11.4",
+    "dagre": "0.8.5"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.0"
+  }
+}

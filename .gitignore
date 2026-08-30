@@ -6,8 +6,11 @@
 __pycache__/
 *.pyc
 *.egg-info/
-build/
-dist/
+/build/
+/dist/
+
+# --- node-зависимости вьюера (бандл dist/ внутри viewer/ коммитится) ---
+node_modules/
 
 # --- артефакты mindgraph ---
 .mindgraph/
