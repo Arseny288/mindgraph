@@ -24,3 +24,6 @@ mindgraph = "mindgraph.cli:main"
 
 [tool.setuptools]
 packages = ["mindgraph"]
+
+[tool.setuptools.package-data]
+mindgraph = ["viewer/*"]
