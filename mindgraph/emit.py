@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 from datetime import datetime, timezone
@@ -24,6 +25,8 @@ from .extract import extract_repo, _iter_python_files, _iter_ignore_files, _rel
 from .group import (group_repo, make_provider, node_map, UNASSIGNED_NODE,
                     _system_prompt, DEEPSEEK_MODEL, ANTHROPIC_MODEL)
 from .shared import node_of, compute_owners_by_node, ENTRY_POINT_PATTERNS, _is_entry_point
+
+log = logging.getLogger("mindgraph.emit")
 
 GRAPH_VERSION = 2  # +domains, +domain_edges, +node.parent, +grouping (аддитивно, §5 спеки)
 
@@ -233,9 +236,11 @@ def build_graph(root: str, provider_name: str = "deepseek", no_llm: bool = False
     молча вернула бы старую группировку).
     """
     root = os.path.abspath(root)
+    log.info("этап A: статический анализ")
     extracted = extract_repo(root, extra_ignore)
     symbols, symbol_edges = extracted["symbols"], extracted["symbol_edges"]
     warnings = list(extracted["warnings"])
+    log.info("этап A: %d символов, %d рёбер", len(symbols), len(symbol_edges))
     entry_patterns = ENTRY_POINT_PATTERNS if entry_points is None else entry_points
     if config_fingerprint is None:
         config_fingerprint = compute_config_fingerprint(
@@ -249,6 +254,7 @@ def build_graph(root: str, provider_name: str = "deepseek", no_llm: bool = False
     preserved_domains: list = []
 
     if preserve_from is not None:
+        log.info("этап B: перенос существующей LLM-разметки (без вызова модели)")
         preserved_node, preserved_summary, preserved_parent, preserved_domains = \
             _preserved_grouping(preserve_from)
         for s in symbols:
@@ -261,6 +267,7 @@ def build_graph(root: str, provider_name: str = "deepseek", no_llm: bool = False
                          and node_of_symbol[s["id"]] == UNASSIGNED_NODE)
         grouping = "llm"
     elif not no_llm:
+        log.info("этап B: группировка (%s)", provider_name)
         try:
             provider = make_provider(provider_name) if model is None \
                 else make_provider(provider_name, model=model)
@@ -333,6 +340,7 @@ def build_graph(root: str, provider_name: str = "deepseek", no_llm: bool = False
     if preserve_from is not None:
         domains = _restore_domains(out_nodes, preserved_parent, preserved_domains)
     else:
+        log.info("этап B2: домены")
         before_symbols = {n["id"]: set(n["symbols"]) for n in out_nodes}
         domains_result = assign_domains(out_nodes, out_node_edges,
                                         provider_name=provider_name, no_llm=no_llm,

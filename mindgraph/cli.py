@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import sys
 
@@ -20,6 +21,8 @@ from . import emit, llmcache
 from . import __version__
 from .config import resolve_config
 from .group import PROVIDERS, DEEPSEEK_MODEL, ANTHROPIC_MODEL
+
+log = logging.getLogger("mindgraph")
 
 # Корень ИНСТРУМЕНТА mindgraph (не анализируемой репы) — ключи провайдеров это
 # креды самого инструмента, .env лежит рядом с pyproject.toml/mindgraph/.
@@ -100,6 +103,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--config", default=None, metavar="FILE",
                     help="конфиг-файл вместо mindgraph.toml/пользовательского")
     ap.add_argument("--port", type=int, default=None, help="порт вьюера (--serve)")
+    ap.add_argument("--verbose", action="store_true",
+                    help="лог этапов и прогресс в stderr (stdout остаётся чистым)")
     ap.add_argument("--list-providers", action="store_true",
                     help="показать доступных LLM-провайдеров и выйти")
     ap.add_argument("--version", action="version", version=f"mindgraph {__version__}")
@@ -114,6 +119,11 @@ def _list_providers() -> None:
 def main(argv=None) -> int:
     _load_dotenv(os.path.join(_TOOL_ROOT, ".env"))
     args = build_parser().parse_args(argv)
+
+    # Прогресс — только в stderr; stdout остаётся чистым (фаза 1 — JSON-контракт).
+    logging.basicConfig(
+        level=logging.INFO if args.verbose else logging.WARNING,
+        format="mindgraph: %(message)s", stream=sys.stderr)
 
     if args.list_providers:
         _list_providers()

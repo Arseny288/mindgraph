@@ -24,11 +24,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from abc import ABC, abstractmethod
 
 from . import llmcache
+
+log = logging.getLogger("mindgraph.group")
 
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEEPSEEK_MODEL = "deepseek-v4-flash"
@@ -565,6 +568,8 @@ def _group_batched(symbols, edges, real: list, provider: LLMProvider, node_count
     ref_counter = 0
 
     for i, batch in enumerate(batches):
+        log.info("группировка: батч %d/%d (%d символов)",
+                 i + 1, len(batches), len(batch))
         batch_ids = {s["id"] for s in batch}
         batch_edges = [e for e in edges
                        if e["from"] in batch_ids and e["to"] in batch_ids]
@@ -648,6 +653,8 @@ def group_repo(symbols, edges, provider: LLMProvider, node_count: int | None = N
         nodes, warnings, usage, raw_text = _group_single(
             symbols, edges, provider, node_count, cache_base, real_ids)
     else:
+        log.info("батчинг: %d символов на %d батчей (лимит %d)",
+                 len(real), len(_split_by_module(real, batch_max)), batch_max)
         nodes, warnings, usage, raw_text = _group_batched(
             symbols, edges, real, provider, node_count, cache_base, batch_max)
 
