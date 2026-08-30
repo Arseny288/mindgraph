@@ -33,7 +33,7 @@ class _BatchingProvider(LLMProvider):
         self.group_calls = 0
         self.complete_calls = 0
 
-    def group(self, symbols, edges, node_count=None):
+    def group(self, symbols, edges, node_count=None, node_min=5, node_max=15):
         self.group_calls += 1
         if self.fail_when and any(self.fail_when(s["id"]) for s in symbols):
             return {"text": "не json", "usage": _USAGE}

@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from mindgraph.extract import extract_repo
 from mindgraph.group import (LLMProvider, UNASSIGNED_NODE, group_repo, node_map,
                             _parse_json_response, _validate_and_bucket,
-                            _assign_synthetic_modules)
+                            _assign_synthetic_modules, _system_prompt)
 from mindgraph.shared import compute_owners_by_node, summarize_by_node
 
 FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -53,7 +53,7 @@ class FakeProvider(LLMProvider):
         self.completions.append((system, user))
         return {"text": self.text, "usage": self.usage}
 
-    def group(self, symbols, edges, node_count=None):
+    def group(self, symbols, edges, node_count=None, node_min=5, node_max=15):
         self.calls.append((symbols, edges, node_count))
         return {"text": self.text, "usage": self.usage}
 
@@ -153,6 +153,26 @@ def test_assign_synthetic_modules_majority_vote():
     # cycle.*.<module>: единственный реальный символ файла ушёл в Прочее
     assert m["cycle.a.<module>"] == UNASSIGNED_NODE
     assert m["cycle.b.<module>"] == UNASSIGNED_NODE
+
+
+def test_system_prompt_respects_node_range():
+    assert "5-15" in _system_prompt()
+    assert "3-8" in _system_prompt(None, 3, 8)
+    assert "ровно 6" in _system_prompt(None, 6, 6)
+    assert "ровно 6" in _system_prompt(6)  # точное K побеждает диапазон
+
+
+def test_group_repo_threads_node_range_to_provider():
+    g = _graph()
+    seen = {}
+
+    class P(FakeProvider):
+        def group(self, symbols, edges, node_count=None, node_min=5, node_max=15):
+            seen["range"] = (node_min, node_max)
+            return super().group(symbols, edges, node_count, node_min, node_max)
+
+    group_repo(g["symbols"], g["symbol_edges"], P(), node_min=3, node_max=8)
+    assert seen["range"] == (3, 8)
 
 
 def test_group_repo_end_to_end_with_fake_provider():

@@ -57,7 +57,7 @@ def compute_config_fingerprint(provider_name: str, model: str | None,
     правка системного промпта в group.py/domains.py сама меняет fingerprint
     без ручной синхронизации счётчика.
     """
-    grouping_prompt = _system_prompt()  # node_count=None -> диапазон "5-15"
+    grouping_prompt = _system_prompt(None, node_min, node_max)
     h = hashlib.sha256()
     for part in (
         provider_name,
@@ -276,7 +276,8 @@ def build_graph(root: str, provider_name: str = "deepseek", no_llm: bool = False
                 f"LLM-провайдер {provider_name!r} недоступен ({e}); работаю как --no-llm")
             provider = None
         if provider is not None:
-            result = group_repo(symbols, symbol_edges, provider, cache_base=cache_base)
+            result = group_repo(symbols, symbol_edges, provider, cache_base=cache_base,
+                                node_min=node_min, node_max=node_max)
             _save_run(root, provider_name, None, result)
             warnings.extend(result["warnings"])
             node_of_symbol = node_map(result["nodes"])

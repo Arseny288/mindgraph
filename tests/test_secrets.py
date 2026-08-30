@@ -27,7 +27,7 @@ class _FakeProvider:
     def __init__(self, **kwargs):
         pass
 
-    def group(self, symbols, edges, node_count=None):
+    def group(self, symbols, edges, node_count=None, node_min=5, node_max=15):
         ids = [s["id"] for s in symbols if not s.get("synthetic")]
         text = json.dumps({"nodes": [{"name": "Всё", "summary": "тест",
                                       "symbols": ids}]}, ensure_ascii=False)

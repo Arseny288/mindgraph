@@ -205,6 +205,14 @@ def test_entry_points_change_invalidates_cache():
     assert g2["repo"]["config_fingerprint"] != g1["repo"]["config_fingerprint"]
 
 
+def test_node_range_change_invalidates_cache():
+    _clean()
+    g1, _ = emit.load_or_build(FIXTURE, no_llm=True)
+    g2, from_cache = emit.load_or_build(FIXTURE, no_llm=True, node_max=8)
+    assert from_cache is False
+    assert g2["repo"]["config_fingerprint"] != g1["repo"]["config_fingerprint"]
+
+
 def _write_llm_graph():
     """Записать graph.json с фабричной LLM-разметкой: все символы в один
     смысловой узел «Все смыслы» (вместо package-proxy)."""

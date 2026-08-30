@@ -63,7 +63,7 @@ class _CachingProvider(LLMProvider):
                                              "cache_read_tokens": 0, "cache_write_tokens": 0,
                                              "raw": {}}}
 
-    def group(self, symbols, edges, node_count=None):
+    def group(self, symbols, edges, node_count=None, node_min=5, node_max=15):
         self.calls += 1
         return {"text": self.text, "usage": {"input_tokens": 1, "output_tokens": 1,
                                              "cache_read_tokens": 0, "cache_write_tokens": 0,

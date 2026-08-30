@@ -63,15 +63,22 @@ _SYSTEM_PROMPT_TEMPLATE = """Сгруппируй символы Python-репо
 """
 
 
-def _system_prompt(node_count: int | None = None) -> str:
-    """Промпт с фиксированным диапазоном узлов (дефолт) или точным K.
+def _system_prompt(node_count: int | None = None, node_min: int = 5,
+                   node_max: int = 15) -> str:
+    """Промпт с диапазоном узлов (``node_min``-``node_max``) или точным K.
 
-    ``node_count`` используется только для контрольных прогонов при
-    сравнении с фиксированной гранулярностью структурного proxy (см.
-    ``run_confound.py`` — K=6 против package-proxy на 6 узлах). В остальном
-    промпт идентичен между вызовами — это и есть честное сравнение.
+    ``node_count`` используется только для контрольных прогонов при сравнении
+    с фиксированной гранулярностью структурного proxy (см. ``run_confound.py``
+    — K=6 против package-proxy на 6 узлах). ``node_min``/``node_max`` приходят
+    из конфига (`[llm] node_min/node_max`) и управляют «свободой» группировки:
+    диапазон сжимается/растягивается, при равенстве — точное число узлов.
     """
-    count_spec = "5-15" if node_count is None else f"ровно {node_count}"
+    if node_count is not None:
+        count_spec = f"ровно {node_count}"
+    elif node_min == node_max:
+        count_spec = f"ровно {node_min}"
+    else:
+        count_spec = f"{node_min}-{node_max}"
     return _SYSTEM_PROMPT_TEMPLATE.format(count_spec=count_spec)
 
 
@@ -126,11 +133,12 @@ class LLMProvider(ABC):
         """
 
     @abstractmethod
-    def group(self, symbols, edges, node_count: int | None = None) -> dict:
+    def group(self, symbols, edges, node_count: int | None = None,
+              node_min: int = 5, node_max: int = 15) -> dict:
         """Вернуть ``{"text": <сырой ответ модели>, "usage": {...}}``.
 
-        ``node_count`` — точное число узлов вместо дефолтного диапазона
-        5-15 (контрольные прогоны на фиксированной гранулярности)."""
+        ``node_count`` — точное число узлов вместо диапазона ``node_min``-
+        ``node_max`` (контрольные прогоны на фиксированной гранулярности)."""
 
 
 class DeepSeekProvider(LLMProvider):
@@ -188,8 +196,9 @@ class DeepSeekProvider(LLMProvider):
             })
         return {"text": text, "usage": usage}
 
-    def group(self, symbols, edges, node_count: int | None = None) -> dict:
-        return self.complete(_system_prompt(node_count),
+    def group(self, symbols, edges, node_count: int | None = None,
+              node_min: int = 5, node_max: int = 15) -> dict:
+        return self.complete(_system_prompt(node_count, node_min, node_max),
                              _build_user_prompt(symbols, edges))
 
 
@@ -237,8 +246,9 @@ class AnthropicProvider(LLMProvider):
             })
         return {"text": text, "usage": usage}
 
-    def group(self, symbols, edges, node_count: int | None = None) -> dict:
-        return self.complete(_system_prompt(node_count),
+    def group(self, symbols, edges, node_count: int | None = None,
+              node_min: int = 5, node_max: int = 15) -> dict:
+        return self.complete(_system_prompt(node_count, node_min, node_max),
                              _build_user_prompt(symbols, edges))
 
 
@@ -388,7 +398,7 @@ def node_map(nodes: list) -> dict:
 
 # --- Батчинг (§3 спеки) -----------------------------------------------------
 
-_MERGE_SYSTEM_PROMPT = """Слей узлы графа кода, полученные из разных частей репозитория, в 5-15
+_MERGE_SYSTEM_PROMPT = """Слей узлы графа кода, полученные из разных частей репозитория, в {count_spec}
 смысловых узлов по НАЗНАЧЕНИЮ. Узлы с похожим назначением (по name и
 summary) объединяй в один; узлы с разным назначением оставляй разными.
 
@@ -399,10 +409,18 @@ summary) объединяй в один; узлы с разным назначе
 Ответь СТРОГО JSON, без markdown-заграждений (```), без преамбулы и без
 пояснений до или после. Формат ответа:
 
-{"nodes": [{"name": "Аутентификация",
+{{"nodes": [{{"name": "Аутентификация",
             "summary": "одно предложение о назначении",
-            "nodes": ["b0", "b3"]}]}
+            "nodes": ["b0", "b3"]}}]}}
 """
+
+
+def _merge_system_prompt(node_min: int = 5, node_max: int = 15) -> str:
+    if node_min == node_max:
+        count_spec = f"ровно {node_min}"
+    else:
+        count_spec = f"{node_min}-{node_max}"
+    return _MERGE_SYSTEM_PROMPT.format(count_spec=count_spec)
 
 
 def _add_usage(total: dict, usage: dict) -> None:
@@ -511,9 +529,10 @@ def _finalize_merge(parsed, batch_nodes: list, warnings: list) -> list | None:
     return final
 
 
-def _merge_nodes(batch_nodes: list, provider: LLMProvider, cache_base):
+def _merge_nodes(batch_nodes: list, provider: LLMProvider, cache_base,
+                 node_min: int = 5, node_max: int = 15):
     """Второй запрос: слить узлы батчей. Отказ -> детерминированная склейка по именам."""
-    system = _MERGE_SYSTEM_PROMPT
+    system = _merge_system_prompt(node_min, node_max)
     user = json.dumps(
         {"nodes": [{"ref": bn["ref"], "name": bn["name"],
                     "summary": bn["summary"], "count": len(bn["symbols"])}
@@ -541,13 +560,13 @@ def _merge_nodes(batch_nodes: list, provider: LLMProvider, cache_base):
 
 
 def _group_single(symbols, edges, provider: LLMProvider, node_count, cache_base,
-                  real_ids: set):
+                  real_ids: set, node_min: int, node_max: int):
     """Один вызов группировки (не батчинг) -> (nodes, warnings, usage, raw_text)."""
-    system = _system_prompt(node_count)
+    system = _system_prompt(node_count, node_min, node_max)
     user = _build_user_prompt(symbols, edges)
     result = _cached(provider, cache_base, system, user,
-                     lambda: provider.group(symbols, edges,
-                                            node_count=node_count))
+                     lambda: provider.group(symbols, edges, node_count=node_count,
+                                            node_min=node_min, node_max=node_max))
     warnings = []
     parsed, err = _parse_json_response(result["text"])
     if err:
@@ -558,7 +577,7 @@ def _group_single(symbols, edges, provider: LLMProvider, node_count, cache_base,
 
 
 def _group_batched(symbols, edges, real: list, provider: LLMProvider, node_count,
-                   cache_base, batch_max: int):
+                   cache_base, batch_max: int, node_min: int, node_max: int):
     """Батчинг: разбить, сгруппировать каждый батч, слить вторым запросом."""
     batches = _split_by_module(real, batch_max)
     warnings = []
@@ -573,12 +592,14 @@ def _group_batched(symbols, edges, real: list, provider: LLMProvider, node_count
         batch_ids = {s["id"] for s in batch}
         batch_edges = [e for e in edges
                        if e["from"] in batch_ids and e["to"] in batch_ids]
-        system = _system_prompt(node_count)
+        system = _system_prompt(node_count, node_min, node_max)
         user = _build_user_prompt(batch, batch_edges)
         try:
             result = _cached(
                 provider, cache_base, system, user,
-                lambda b=batch, be=batch_edges: provider.group(b, be, node_count=node_count))
+                lambda b=batch, be=batch_edges: provider.group(
+                    b, be, node_count=node_count,
+                    node_min=node_min, node_max=node_max))
         except Exception as e:
             warnings.append(f"батч {i + 1}/{len(batches)} не сгруппирован "
                             f"({e}); символы батча уходят в {UNASSIGNED_NODE}")
@@ -610,7 +631,8 @@ def _group_batched(symbols, edges, real: list, provider: LLMProvider, node_count
 
     if len(merge_nodes) > 1:
         nodes, mwarnings, musage, mtext = _merge_nodes(merge_nodes, provider,
-                                                       cache_base)
+                                                       cache_base,
+                                                       node_min, node_max)
         warnings.extend(mwarnings)
         _add_usage(total_usage, musage)
         raw_texts.append(mtext)
@@ -627,11 +649,13 @@ def _group_batched(symbols, edges, real: list, provider: LLMProvider, node_count
 
 
 def group_repo(symbols, edges, provider: LLMProvider, node_count: int | None = None,
-               cache_base=None, batch_max: int = BATCH_MAX_SYMBOLS) -> dict:
+               cache_base=None, batch_max: int = BATCH_MAX_SYMBOLS,
+               node_min: int = 5, node_max: int = 15) -> dict:
     """Оркестрация этапа B: группировка (с батчингом по спеке §3) + валидация.
 
-    ``node_count`` — прокинуть точное K вместо дефолтного диапазона 5-15
-    (контрольные прогоны на фиксированной гранулярности).
+    ``node_count`` — прокинуть точное K вместо диапазона ``node_min``-
+    ``node_max`` (контрольные прогоны на фиксированной гранулярности);
+    ``node_min``/``node_max`` приходят из конфига и задают диапазон узлов.
 
     ``cache_base`` — каталог кэша LLM-ответов (см. llmcache.py). Если задан и
     провайдер несёт атрибуты ``name``/``model``, ответ кэшируется по хэшу
@@ -651,12 +675,14 @@ def group_repo(symbols, edges, provider: LLMProvider, node_count: int | None = N
 
     if len(real) <= batch_max:
         nodes, warnings, usage, raw_text = _group_single(
-            symbols, edges, provider, node_count, cache_base, real_ids)
+            symbols, edges, provider, node_count, cache_base, real_ids,
+            node_min, node_max)
     else:
         log.info("батчинг: %d символов на %d батчей (лимит %d)",
                  len(real), len(_split_by_module(real, batch_max)), batch_max)
         nodes, warnings, usage, raw_text = _group_batched(
-            symbols, edges, real, provider, node_count, cache_base, batch_max)
+            symbols, edges, real, provider, node_count, cache_base, batch_max,
+            node_min, node_max)
 
     # Индикатор качества группировки — считаем ДО приписывания синтетических
     # <module>: те попадают в UNASSIGNED_NODE через majority vote (см.

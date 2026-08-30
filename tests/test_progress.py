@@ -23,7 +23,7 @@ class _FakeProvider(LLMProvider):
     name = "deepseek"
     model = "test"
 
-    def group(self, symbols, edges, node_count=None):
+    def group(self, symbols, edges, node_count=None, node_min=5, node_max=15):
         ids = [s["id"] for s in symbols]
         return {"text": json.dumps({"nodes": [{"name": "Всё", "summary": "",
                                                "symbols": ids}]}),
