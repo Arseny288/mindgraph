@@ -14,7 +14,8 @@ node_modules/
 
 # --- артефакты mindgraph ---
 .mindgraph/
-.mindvibe/
+.mindvibe/*
+!.mindvibe/nodes.yaml
 
 # --- IDE ---
 .idea/

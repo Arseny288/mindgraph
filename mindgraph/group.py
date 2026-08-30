@@ -64,14 +64,17 @@ _SYSTEM_PROMPT_TEMPLATE = """Сгруппируй символы Python-репо
 
 
 def _system_prompt(node_count: int | None = None, node_min: int = 5,
-                   node_max: int = 15) -> str:
+                   node_max: int = 15, existing_nodes=None) -> str:
     """Промпт с диапазоном узлов (``node_min``-``node_max``) или точным K.
 
     ``node_count`` используется только для контрольных прогонов при сравнении
     с фиксированной гранулярностью структурного proxy (см. ``run_confound.py``
     — K=6 против package-proxy на 6 узлах). ``node_min``/``node_max`` приходят
-    из конфига (`[llm] node_min/node_max`) и управляют «свободой» группировки:
-    диапазон сжимается/растягивается, при равенстве — точное число узлов.
+    из конфига (`[llm] node_min/node_max`) и управляют «свободой» группировки.
+
+    ``existing_nodes`` — имена уже существующих (манифестных) узлов: модель
+    должна относить символы к ним ТОЧНО по имени или создавать новые, не
+    переименовывая и не разбивая существующие.
     """
     if node_count is not None:
         count_spec = f"ровно {node_count}"
@@ -79,7 +82,15 @@ def _system_prompt(node_count: int | None = None, node_min: int = 5,
         count_spec = f"ровно {node_min}"
     else:
         count_spec = f"{node_min}-{node_max}"
-    return _SYSTEM_PROMPT_TEMPLATE.format(count_spec=count_spec)
+    prompt = _SYSTEM_PROMPT_TEMPLATE.format(count_spec=count_spec)
+    if existing_nodes:
+        names = ", ".join(f"«{n}»" for n in existing_nodes)
+        prompt += (
+            "\n\nУже существуют узлы: " + names + ". Относи символы к этим узлам "
+            "(используй ТОЧНО их имена) или создавай новые узлы, если ни один не "
+            "подходит. Не переименовывай и не разбивай существующие узлы."
+        )
+    return prompt
 
 
 # Обратная совместимость: старое имя, дефолтный (5-15) промпт.
@@ -648,9 +659,50 @@ def _group_batched(symbols, edges, real: list, provider: LLMProvider, node_count
     return nodes, warnings, total_usage, "\n\n".join(raw_texts)
 
 
+def _group_pinned(symbols, edges, real: list, provider: LLMProvider,
+                  cache_base, node_count, node_min, node_max,
+                  pinned: dict, existing_nodes: list) -> tuple:
+    """Манифестный режим: часть символов уже приписана (``pinned``), модель
+    классифицирует ТОЛЬКО свободные символы — в существующие узлы (по имени)
+    или в новые. Существующие узлы не переименовываются и не разбиваются.
+    """
+    warnings: list = []
+    usage = _empty_usage()
+    raw_texts: list = []
+
+    by_name: dict = {}
+    for sid, name in pinned.items():
+        by_name.setdefault(name, []).append(sid)
+    nodes = [{"name": name, "summary": "", "symbols": sorted(sids)}
+             for name, sids in sorted(by_name.items())]
+
+    free = [s for s in real if s["id"] not in pinned]
+    if free:
+        free_ids = {s["id"] for s in free}
+        free_edges = [e for e in edges
+                      if e["from"] in free_ids and e["to"] in free_ids]
+        system = _system_prompt(node_count, node_min, node_max, existing_nodes)
+        user = _build_user_prompt(free, free_edges)
+        result = _cached(provider, cache_base, system, user,
+                         lambda: provider.complete(system, user, max_tokens=32000))
+        usage = result["usage"]
+        raw_texts.append(result["text"])
+        parsed, err = _parse_json_response(result["text"])
+        if err:
+            warnings.append(err)
+            parsed = {"nodes": []}
+        nodes.extend(_validate_and_bucket(parsed, free_ids, warnings))
+
+    unassigned_count = len(next(
+        (n["symbols"] for n in nodes if n["name"] == UNASSIGNED_NODE), []))
+    _assign_synthetic_modules(nodes, symbols)
+    return nodes, warnings, usage, "\n\n".join(raw_texts), unassigned_count
+
+
 def group_repo(symbols, edges, provider: LLMProvider, node_count: int | None = None,
                cache_base=None, batch_max: int = BATCH_MAX_SYMBOLS,
-               node_min: int = 5, node_max: int = 15) -> dict:
+               node_min: int = 5, node_max: int = 15,
+               pinned: dict | None = None, existing_nodes: list | None = None) -> dict:
     """Оркестрация этапа B: группировка (с батчингом по спеке §3) + валидация.
 
     ``node_count`` — прокинуть точное K вместо диапазона ``node_min``-
@@ -665,6 +717,10 @@ def group_repo(symbols, edges, provider: LLMProvider, node_count: int | None = N
     по модулям + второй запрос слияния (§3 спеки). Одинаковый вход всегда даёт
     одинаковые батчи (детерминизм), частичный отказ батча не роняет прогон.
 
+    ``pinned``/``existing_nodes`` — манифестный режим (см. :func:`_group_pinned`):
+    ``pinned`` = {symbol_id: node_name} заранее приписанных символов, модель
+    классифицирует только свободные и не переименовывает существующие узлы.
+
     Возвращает ``{"nodes": [...], "unassigned_count", "warnings", "usage",
     "raw_text"}``. ``nodes`` уже включает синтетические <module> (см.
     :func:`_assign_synthetic_modules`) — готов для :func:`node_map`.
@@ -672,6 +728,15 @@ def group_repo(symbols, edges, provider: LLMProvider, node_count: int | None = N
     """
     real = [s for s in symbols if not s.get("synthetic")]
     real_ids = {s["id"] for s in real}
+
+    if pinned:
+        nodes, warnings, usage, raw_text, unassigned_count = _group_pinned(
+            symbols, edges, real, provider, cache_base, node_count,
+            node_min, node_max, pinned, existing_nodes or [])
+        return {
+            "nodes": nodes, "unassigned_count": unassigned_count,
+            "warnings": warnings, "usage": usage, "raw_text": raw_text,
+        }
 
     if len(real) <= batch_max:
         nodes, warnings, usage, raw_text = _group_single(

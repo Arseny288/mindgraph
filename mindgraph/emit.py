@@ -24,6 +24,7 @@ from .domains import assign_domains, UNASSIGNED_DOMAIN, _DOMAIN_SYSTEM_PROMPT
 from .extract import extract_repo, _iter_python_files, _iter_ignore_files, _rel
 from .group import (group_repo, make_provider, node_map, UNASSIGNED_NODE,
                     _system_prompt, DEEPSEEK_MODEL, ANTHROPIC_MODEL)
+from . import manifest
 from .shared import node_of, compute_owners_by_node, ENTRY_POINT_PATTERNS, _is_entry_point
 
 log = logging.getLogger("mindgraph.emit")
@@ -248,6 +249,7 @@ def build_graph(root: str, provider_name: str = "deepseek", no_llm: bool = False
 
     node_of_symbol: dict = {}
     node_meta: dict = {}
+    node_id_override: dict = {}  # имя узла -> стабильный id (из манифеста)
     unassigned = 0
     grouping = "package"
     preserved_parent: dict = {}
@@ -276,8 +278,20 @@ def build_graph(root: str, provider_name: str = "deepseek", no_llm: bool = False
                 f"LLM-провайдер {provider_name!r} недоступен ({e}); работаю как --no-llm")
             provider = None
         if provider is not None:
-            result = group_repo(symbols, symbol_edges, provider, cache_base=cache_base,
-                                node_min=node_min, node_max=node_max)
+            manifest_nodes = manifest.load(root)
+            if manifest_nodes:
+                real = [s for s in symbols if not s.get("synthetic")]
+                pinned = manifest.preassign(real, manifest_nodes)
+                for n in manifest_nodes:
+                    node_id_override[n["title"]] = n["id"]
+                result = group_repo(
+                    symbols, symbol_edges, provider, cache_base=cache_base,
+                    node_min=node_min, node_max=node_max, pinned=pinned,
+                    existing_nodes=[n["title"] for n in manifest_nodes])
+            else:
+                result = group_repo(symbols, symbol_edges, provider,
+                                    cache_base=cache_base,
+                                    node_min=node_min, node_max=node_max)
             _save_run(root, provider_name, None, result)
             warnings.extend(result["warnings"])
             node_of_symbol = node_map(result["nodes"])
@@ -310,7 +324,7 @@ def build_graph(root: str, provider_name: str = "deepseek", no_llm: bool = False
 
     out_nodes = []
     for name, members in sorted(by_node.items()):
-        nid = "n_" + _slug(name)
+        nid = node_id_override.get(name) or ("n_" + _slug(name))
         shared_count = sum(1 for m in members
                            if not m.get("synthetic") and direct[m["id"]]["shared"])
         out_nodes.append({

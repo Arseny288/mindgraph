@@ -42,17 +42,27 @@ cp .env.example .env        # впиши DEEPSEEK_API_KEY (и/или ANTHROPIC_A
 
 ## Использование
 
-```bash
-mindgraph <path>            # анализ + запись <path>/.mindgraph/graph.json
-mindgraph <path> --serve    # то же + вьюер на http://127.0.0.1:5173
-mindgraph <path> --no-llm   # только статический анализ, без LLM-группировки
-mindgraph <path> --regroup  # полный пересчёт LLM-группировки
-mindgraph <path> --stats    # метрики (файлы/символы/узлы/shared) и выход
-mindgraph <path> --force    # пересчитать даже если graph.json актуален
-```
+Машинный контракт (фаза 1): результат — только в stdout, только валидный JSON
+(в каждом ответе `"schema_version"`), все логи/прогресс — в stderr. Коды
+возврата: `0` успех, `1` ошибка выполнения, `2` неверные аргументы,
+`3` нарушение границы.
 
 ```bash
-mindgraph --list-providers  # доступные LLM-провайдеры и их модели
+mindgraph scan <dir>                # построить/обновить graph.json (--serve/--stats)
+mindgraph scan <dir> --no-llm       # только статический анализ
+mindgraph scan <dir> --regroup      # полный пересчёт LLM-группировки
+mindgraph graph --json [--dir .]    # весь граф
+mindgraph node <id> --json          # узел: зона, контракты, смешанные файлы
+mindgraph impact <sym|file> [--depth N] --json   # транзитивное множество
+mindgraph boundary <node> --json    # границы: allow_write/allow_create/read
+mindgraph tests --for-node <id> --json          # какие тесты (ok/unverified)
+mindgraph verify --node <id> --diff <path|->    # проверка диффа (exit 3)
+```
+
+Служебное:
+
+```bash
+mindgraph --list-providers
 mindgraph --version
 mindgraph --help
 ```
@@ -60,20 +70,39 @@ mindgraph --help
 Пример на реальной библиотеке, без тестов:
 
 ```bash
-mindgraph Testing_libs/requests --ignore tests --serve
+mindgraph scan Testing_libs/requests --ignore tests --serve
 ```
+
+## Манифест узлов (стабильные id)
+
+`<repo>/.mindvibe/nodes.yaml` (коммитится в git) фиксирует идентичность узлов —
+LLM при пересчёте не переименовывает и не переразбивает их, а классифицирует
+только символы, не покрытые `own_paths`:
+
+```yaml
+nodes:
+  - id: auth
+    title: Аутентификация
+    own_paths: ["app/auth/**", "app/tokens.py"]
+```
+
+`own_paths` — gitignore-глобы относительно корня репы. Символы, попавшие под
+них, приписываются к узлу механически (модель их не видит).
 
 ## Cache-first флоу
 
 ```
-mindgraph <path>
-  └─ repo_hash по (путь, размер, mtime) .py-файлов + содержимое ignore-файлов
-     ├─ совпал с .mindgraph/graph.json  → переиспользуем, ноль работы
-     └─ изменился:
-         ├─ пере-экстракт статики (ast, быстро)
-         ├─ LLM-группировка СОХРАНЯЕТСЯ (новые символы → «Прочее»)
-         └─ полный regroup — только по явному --regroup
+mindgraph scan <path>
+  └─ repo_hash + config_fingerprint
+      ├─ совпали с .mindgraph/graph.json  → переиспользуем, ноль работы
+      └─ изменились:
+          ├─ пере-экстракт статики (ast, быстро)
+          ├─ LLM-группировка СОХРАНЯЕТСЯ (новые символы → «Прочее»)
+          └─ полный regroup — только по явному --regroup
 ```
+
+`config_fingerprint` покрывает провайдер/модель/диапазон узлов/entry_points/
+версии промптов — смена конфига инвалидирует кэш наравне с правкой кода.
 
 LLM-ответы кэшируются по `sha256(provider + model + system_prompt +
 user_prompt)` в `~/.cache/mindgraph/llm/`. Повторный `--regroup` на неизменном
@@ -115,13 +144,14 @@ dir = "~/.cache/mindgraph"
 ## Игноры при сканировании
 
 Всегда игнорируются: `.git`, `venv`, `.venv`, `node_modules`, `__pycache__`,
-`.mindgraph`, `.mindvibe` (legacy), `build`, `dist`, `migrations`,
-`*.egg-info`, плюс всё из `.gitignore` (корень + вложенные) и
-`.mindgraphignore` (формат gitignore, с поддержкой `!`-negation).
+`.mindgraph`, `.mindvibe` (внутри — только манифест `nodes.yaml`, сам он не
+сканируется как код), `build`, `dist`, `migrations`, `*.egg-info`, плюс всё из
+`.gitignore` (корень + вложенные) и `.mindgraphignore` (формат gitignore, с
+поддержкой `!`-negation).
 
 ## Как читать метрику `shared_ratio`
 
-`mindgraph <path> --stats` печатает долю shared-символов — тех, кого
+`mindgraph scan <path> --stats` печатает долю shared-символов — тех, кого
 используют более чем из одного узла.
 
 - до ~15% — узлы изолируемы, границы записи осмысленны;
@@ -130,14 +160,7 @@ dir = "~/.cache/mindgraph"
 ## Разработка
 
 ```bash
-# тесты (без внешней сети — LLM подменяется фейковым провайдером)
-python tests/test_extract.py
-python tests/test_group.py
-python tests/test_shared.py
-python tests/test_emit.py
-python tests/test_ignore.py
-python tests/test_llmcache.py
-python tests/test_config.py
+pytest tests/            # все тесты (без внешней сети — LLM подменяется фейком)
 ```
 
 Тесты построены на синтетической фикстуре `tests/fixtures/sample_repo/`
@@ -157,8 +180,13 @@ mindgraph/
   llmcache.py  # кэш LLM-ответов по хэшу промпта
   emit.py      # сборка graph.json + cache-first
   serve.py     # статик-сервер вьюера
+  model.py     # модель владения: файлы/контракты/границы/смешанные файлы
+  manifest.py  # манифест .mindvibe/nodes.yaml (стабильные id узлов)
+  impact.py    # транзитивное множество затронутого
+  verify.py    # механическая проверка диффа против границы узла
+  testselect.py# какие тесты прогонять (ok/failed/unverified)
 viewer/        # index.html, main.jsx, nodes.jsx, theme.js (React Flow + dagre)
-tests/         # фикстура + тесты этапов A/B/C/emit/ignore/cache/config
+tests/         # фикстура + тесты этапов A/B/C/emit/ignore/cache/config + фаз 1/1.5
 MINDGRAPH.md   # детальная документация
 ```
 

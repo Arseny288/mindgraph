@@ -13,6 +13,7 @@ authors = [{ name = "mindgraph" }]
 dependencies = [
     "openai>=1.0",
     "pathspec>=0.12",
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]

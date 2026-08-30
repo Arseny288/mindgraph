@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+from . import model
+
 
 def _start_symbols(graph: dict, query: str) -> set:
     """Начальное множество: символ по id, либо все символы файла."""
@@ -16,10 +18,21 @@ def _start_symbols(graph: dict, query: str) -> set:
 
 
 def impact(graph: dict, query: str, depth: int | None = None) -> dict:
-    """Возвращает затронутые символы и файлы (плюс рёбра затронутого подграфа)."""
+    """Возвращает затронутые символы и файлы + неполноту (нерезолвленные импорты).
+
+    ``complete=False`` означает: в графе есть нерезолвленные импорты, часть
+    затронутого могла быть упущена (impact занижен).
+    """
     start = _start_symbols(graph, query)
     if not start:
-        return {"query": query, "symbols": [], "files": []}
+        return {
+            "query": query,
+            "depth": depth,
+            "symbols": [],
+            "files": [],
+            "unresolved": model.unresolved_imports(graph),
+            "complete": not model.graph_incomplete(graph),
+        }
 
     outgoing: dict = {}
     for e in graph["symbol_edges"]:
@@ -46,4 +59,6 @@ def impact(graph: dict, query: str, depth: int | None = None) -> dict:
         "depth": depth,
         "symbols": symbols,
         "files": files,
+        "unresolved": model.unresolved_imports(graph),
+        "complete": not model.graph_incomplete(graph),
     }

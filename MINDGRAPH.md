@@ -9,24 +9,40 @@ CLI-инструмент, который сканирует Python-репози�
 
 ```
 pip install -e .
-mindgraph <path>            # анализ + запись .mindgraph/graph.json
-mindgraph <path> --serve    # то же + вьюер на http://127.0.0.1:5173
-mindgraph <path> --no-llm   # только статический анализ, без LLM-группировки
-mindgraph <path> --regroup  # полный платный пересчёт LLM-группировки
-mindgraph <path> --stats    # метрики shared-слоя и выход
+mindgraph scan <path>            # анализ + запись .mindgraph/graph.json
+mindgraph scan <path> --serve    # то же + вьюер на http://127.0.0.1:5173
+mindgraph scan <path> --no-llm   # только статический анализ, без LLM-группировки
+mindgraph scan <path> --regroup  # полный пересчёт LLM-группировки
+mindgraph scan <path> --stats    # метрики shared-слоя и выход
 ```
+
+## JSON-контракт (фаза 1)
+
+Подкоманды `graph/node/impact/boundary/tests/verify` выводят результат только
+в stdout и только валидный JSON (в каждом ответе `"schema_version": "1"`);
+логи — в stderr. Коды возврата: `0`/`1`/`2`/`3` (`3` — нарушение границы в
+`verify`).
 
 ## Cache-first флоу
 
 ```
-mindgraph <path>
-  └─ repo_hash по (путь, размер, mtime) .py-файлов + содержимое ignore-файлов
-     ├─ совпал с .mindgraph/graph.json  → переиспользуем, ноль работы
-     └─ изменился:
-         ├─ пере-экстракт статики (ast, быстро)
-         ├─ LLM-группировка СОХРАНЯЕТСЯ (новые символы → «Прочее»)
-         └─ полный regroup — только по явному --regroup
+mindgraph scan <path>
+  └─ repo_hash + config_fingerprint
+      ├─ совпали с .mindgraph/graph.json  → переиспользуем, ноль работы
+      └─ изменились:
+          ├─ пере-экстракт статики (ast, быстро)
+          ├─ LLM-группировка СОХРАНЯЕТСЯ (новые символы → «Прочее»)
+          └─ полный regroup — только по явному --regroup
 ```
+
+`config_fingerprint` покрывает провайдер/модель/диапазон узлов/entry_points/
+версии промптов — смена конфига инвалидирует кэш наравне с правкой кода.
+
+## Манифест узлов
+
+`<repo>/.mindvibe/nodes.yaml` (в git) фиксирует стабильные id узлов; LLM не
+переименовывает и не переразбивает их, а классифицирует только символы вне
+`own_paths`.
 
 LLM-вызовы кэшируются по `sha256(provider + model + system_prompt +
 user_prompt)` в `~/.cache/mindgraph/llm/` (см. `--config cache_dir`), поэтому
@@ -64,9 +80,9 @@ dir = "~/.cache/mindgraph"
 ## Игноры
 
 Сканирование игнорирует: `.git`, `venv`, `.venv`, `node_modules`,
-`__pycache__`, `.mindgraph`, `.mindvibe` (legacy), `build`, `dist`,
-`migrations`, `*.egg-info`, всё из `.gitignore` (корень + вложенные) и
-`.mindgraphignore`.
+`__pycache__`, `.mindgraph`, `.mindvibe` (внутри — только манифест `nodes.yaml`),
+`build`, `dist`, `migrations`, `*.egg-info`, всё из `.gitignore` (корень +
+вложенные) и `.mindgraphignore`.
 
 ## Как это работает
 
@@ -77,6 +93,11 @@ dir = "~/.cache/mindgraph"
 | B2. домены | `mindgraph/domains.py` | второй LLM-запрос: узлы L1 → домены L0 |
 | C. shared | `mindgraph/shared.py` | `owners(S)` по прямым обратным рёбрам → кто сломается при правке |
 | сборка | `mindgraph/emit.py` | `graph.json` — единственный контракт с вьюером |
+| владение | `mindgraph/model.py` | файл→хозяин, контракты, границы, смешанные файлы |
+| манифест | `mindgraph/manifest.py` | `.mindvibe/nodes.yaml` — стабильные id узлов |
+| impact | `mindgraph/impact.py` | транзитивное множество затронутого |
+| verify | `mindgraph/verify.py` | проверка диффа против границы (по путям и символам) |
+| тесты | `mindgraph/testselect.py` | какие тесты прогонять (ok/failed/unverified) |
 | вьюер | `mindgraph/serve.py` + `viewer/` | статика, React Flow + dagre |
 
 ## Структура

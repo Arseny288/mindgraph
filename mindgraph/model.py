@@ -29,6 +29,23 @@ def load_graph(root: str) -> dict:
         return json.load(fh)
 
 
+# Три состояния вердикта (фаза 1.5): на них опираются фаза 2 и вьюер.
+STATUS_OK = "ok"
+STATUS_FAILED = "failed"
+STATUS_UNVERIFIED = "unverified"
+
+
+def unresolved_imports(graph: dict) -> list:
+    """Нерезолвленные импорты — внешние пакеты, которые экстрактор не смог
+    свести к внутрирепозиторным символам (неполнота графа)."""
+    return list(graph.get("stats", {}).get("external", []))
+
+
+def graph_incomplete(graph: dict) -> bool:
+    """Граф неполон: есть нерезолвленные импорты -> impact/verify занижают."""
+    return bool(unresolved_imports(graph))
+
+
 def signature_hash(sig: str | None) -> str:
     """Фиксированный хэш сигнатуры контракта."""
     return "sha256:" + hashlib.sha256((sig or "").encode("utf-8")).hexdigest()[:16]
@@ -67,6 +84,56 @@ def file_owner_map(graph: dict) -> dict:
     return owners
 
 
+def file_symbol_nodes(graph: dict) -> dict:
+    """``{file: {node_name: [symbol_ids]}}`` для РЕАЛЬНЫХ символов."""
+    by_file: dict = {}
+    for s in graph["symbols"]:
+        if s.get("synthetic"):
+            continue
+        by_file.setdefault(s["file"], {}).setdefault(s["node"], []).append(s["id"])
+    return by_file
+
+
+def mixed_files(graph: dict) -> dict:
+    """``{file: {owner, nodes, foreign}}`` — файлы с символами >1 узла.
+
+    ``foreign`` — символы (по узлам), принадлежащие НЕ хозяину файла. Это дыра
+    в границе: владелец смешанного файла может править чужой символ, а
+    проверка по путям этого не видит — поэтому verify разбирает дифф до символов.
+    """
+    owners = file_owner_map(graph)
+    fn = file_symbol_nodes(graph)
+    mixed: dict = {}
+    for f, nodes in fn.items():
+        if len(nodes) > 1:
+            owner = owners.get(f, "?")
+            mixed[f] = {
+                "owner": owner,
+                "nodes": {n: sorted(ids) for n, ids in sorted(nodes.items())},
+                "foreign": {n: sorted(ids) for n, ids in sorted(nodes.items())
+                            if n != owner},
+            }
+    return mixed
+
+
+def mixed_file_stats(graph: dict) -> dict:
+    """Метрика смешанности файлов для отчёта (фаза 1.5)."""
+    fn = file_symbol_nodes(graph)
+    mixed = mixed_files(graph)
+    total_files = len(fn)
+    total_real = sum(len(ids) for nodes in fn.values() for ids in nodes.values())
+    foreign_count = sum(len(ids) for m in mixed.values()
+                        for ids in m["foreign"].values())
+    return {
+        "total_files": total_files,
+        "mixed_files": len(mixed),
+        "mixed_file_ratio": (len(mixed) / total_files) if total_files else 0.0,
+        "foreign_symbols_in_mixed": foreign_count,
+        "total_real_symbols": total_real,
+        "foreign_ratio": (foreign_count / total_real) if total_real else 0.0,
+    }
+
+
 def contract_symbols(graph: dict) -> list:
     """Все контрактные (shared) символы с фиксированной сигнатурой."""
     return [{"symbol": s["id"], "node": s["node"],
@@ -99,11 +166,10 @@ def node_contracts(graph: dict, node: dict) -> list:
 
 
 def node_view(graph: dict, node: dict) -> dict:
-    """Всё, что нужно команде ``node``: owned / contracts / foreign."""
+    """Всё, что нужно команде ``node``: owned / contracts / foreign / mixed."""
     owners = file_owner_map(graph)
-    node_files = set(node.get("files", []))
     owned_files = sorted(f for f, owner in owners.items()
-                         if owner == node["name"] and f in node_files)
+                         if owner == node["name"])
     owned_symbols = sorted(
         (s for s in graph["symbols"]
          if s["node"] == node["name"] and not s.get("synthetic")),
@@ -113,11 +179,21 @@ def node_view(graph: dict, node: dict) -> dict:
     all_files = {s["file"] for s in graph["symbols"]}
     foreign_files = sorted(all_files - set(owned_files))
 
+    mixed = mixed_files(graph)
+    owned_mixed = [
+        {"file": f, "owner": mixed[f]["owner"],
+         "foreign_symbols": sorted(
+             sid for ids in mixed[f]["foreign"].values() for sid in ids),
+         "foreign_nodes": sorted(mixed[f]["foreign"])}
+        for f in owned_files if f in mixed and mixed[f]["owner"] == node["name"]
+    ]
+
     return {
         "owned_files": owned_files,
         "owned_symbols": [s["id"] for s in owned_symbols],
         "contracts": contracts,
         "foreign_files": foreign_files,
+        "mixed": owned_mixed,
     }
 
 
@@ -157,28 +233,65 @@ def allow_write_globs(graph: dict, node: dict) -> list:
     return sorted(entries | extra)
 
 
+def allow_create_globs(graph: dict, node: dict) -> list:
+    """Глобы каталогов, ЦЕЛИКОМ принадлежащих узлу — в них можно создавать
+    новые файлы (allow_write даёт точные пути и не покрывает создание)."""
+    owners = file_owner_map(graph)
+    all_files = {s["file"] for s in graph["symbols"]}
+    owned = {f for f, o in owners.items() if o == node["name"]}
+
+    dir_of: dict = {}
+    for f in all_files:
+        dir_of.setdefault(os.path.dirname(f), set()).add(f)
+
+    fully_owned = {d for d, files in dir_of.items() if files and files <= owned}
+
+    def _has_owned_ancestor(d: str) -> bool:
+        parts = d.split("/")
+        return any("/".join(parts[:i]) in fully_owned
+                   for i in range(1, len(parts)))
+
+    return sorted({(d + "/**") if d else "**"
+                   for d in fully_owned if not _has_owned_ancestor(d)})
+
+
 def boundary(graph: dict, node: dict) -> dict:
-    """Границы зоны узла: allow_write / deny_write / allow_read / contracts.
+    """Границы зоны узла: allow_write / allow_create / deny_write / allow_read.
 
     Порядок разрешения — deny по умолчанию (``**``), allow точечно.
-    ``allow_read`` = зона записи + ТОЧНЫЕ пути файлов контрактных символов
-    (читать можно, менять сигнатуру нельзя).
+    ``allow_read`` = зона записи + ТОЧНЫЕ пути файлов контрактных символов.
+    ``mixed`` — смешанные файлы зоны (чужие символы нельзя править, даже если
+    путь в allow_write).
     """
     contracts = node_contracts(graph, node)
     sym_by_id = _symbol_by_id(graph)
 
     allow_write = allow_write_globs(graph, node)
+    allow_create = allow_create_globs(graph, node)
     contract_files = sorted({sym_by_id[c["symbol"]]["file"]
                              for c in contracts
                              if c["symbol"] in sym_by_id})
     allow_read = sorted(set(allow_write) | set(contract_files))
+
+    mixed = mixed_files(graph)
+    owners = file_owner_map(graph)
+    owned_files = sorted(f for f, o in owners.items() if o == node["name"])
+    mixed_here = [
+        {"file": f, "owner": mixed[f]["owner"],
+         "foreign_symbols": sorted(
+             sid for ids in mixed[f]["foreign"].values() for sid in ids),
+         "foreign_nodes": sorted(mixed[f]["foreign"])}
+        for f in owned_files if f in mixed
+    ]
 
     return {
         "schema_version": "1",
         "node_id": node["id"],
         "node_name": node["name"],
         "allow_write": allow_write,
+        "allow_create": allow_create,
         "deny_write": ["**"],
         "allow_read": allow_read,
         "contracts": contracts,
+        "mixed": mixed_here,
     }

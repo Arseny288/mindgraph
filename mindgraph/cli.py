@@ -203,6 +203,7 @@ def _cmd_node(args) -> int:
                       "symbols": view["owned_symbols"]},
             "contracts": view["contracts"],
             "foreign": {"files": view["foreign_files"]},
+            "mixed": view["mixed"],
         })
         return EXIT_OK
 
@@ -252,21 +253,20 @@ def _cmd_tests(args) -> int:
         except KeyError as e:
             print(f"mindgraph: {e}", file=sys.stderr)
             return EXIT_RUNTIME
-        tests = testselect.node_tests(graph, node)
-        kind = f"for-node {args.for_node}"
+        result = testselect.node_tests(graph, node, f"for-node {args.for_node}")
     else:
         diff_text = _read_diff(args.for_diff)
         changed = {f["path"] for f in verify_mod._parse_diff(diff_text)}
-        tests = testselect.diff_tests(graph, changed)
-        kind = f"for-diff {args.for_diff}"
+        result = testselect.diff_tests(graph, changed, f"for-diff {args.for_diff}")
 
     if args.json:
-        _out_json({"schema_version": SCHEMA_VERSION, "tests": tests,
-                   "query": kind})
+        _out_json(result)
         return EXIT_OK
-    print(f"тесты ({kind}): {len(tests)}")
-    for t in tests:
+    print(f"тесты ({result['query']}): {result['status']} — {len(result['tests'])}")
+    for t in result["tests"]:
         print(f"  {t}")
+    if result["status"] != model.STATUS_OK:
+        print(f"  (unverified: {result.get('reason', '?')})", file=sys.stderr)
     return EXIT_OK
 
 

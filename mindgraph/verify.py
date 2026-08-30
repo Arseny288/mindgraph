@@ -127,20 +127,53 @@ def _local_signatures(text: str) -> dict:
     return sigs
 
 
+def _changed_line_ranges(hunks: list) -> list:
+    """Оригинальные диапазоны строк, затронутых хунками (1-based, включительно)."""
+    ranges = []
+    for hunk in hunks:
+        m = re.search(r"@@ -(\d+)(?:,(\d+))?", hunk["header"])
+        if not m:
+            continue
+        start = int(m.group(1))
+        count = int(m.group(2)) if m.group(2) else 1
+        if count > 0:
+            ranges.append((start, start + count - 1))
+    return ranges
+
+
+def _touched_symbols(graph: dict, path: str, ranges: list) -> list:
+    """Реальные символы файла, чьи строки пересекаются с затронутыми."""
+    if not ranges:
+        return []
+    syms = [s for s in graph["symbols"]
+            if s["file"] == path and not s.get("synthetic")]
+    touched = []
+    for s in syms:
+        lo, hi = s["lines"][0], s["lines"][1]
+        if any(not (hi < r0 or lo > r1) for r0, r1 in ranges):
+            touched.append(s)
+    return touched
+
+
 def verify(graph: dict, node: dict, diff_text: str,
            original_dir: str | None = None) -> dict:
-    """Проверить дифф против границы узла. Возвращает вердикт + нарушения."""
+    """Проверить дифф против границы узла. Возвращает вердикт + нарушения.
+
+    Проверка механическая, до символов, без LLM:
+
+    * путь вне ``allow_write`` -> ``outside_node_zone``;
+    * изменённый символ чужого узла в смешанном файле зоны ->
+      ``foreign_symbol_in_shared_file``;
+    * изменённая сигнатура контрактного (shared) символа ->
+      ``contract_signature_changed``.
+
+    ``unresolved``/``complete`` — неполнота графа: нерезолвленные импорты
+    могли скрыть часть затронутого.
+    """
     bnd = model.boundary(graph, node)
     owners = model.file_owner_map(graph)
     sym_by_id = {s["id"]: s for s in graph["symbols"]}
-
-    # ВСЕ контрактные (shared) символы — их сигнатуру нельзя менять, даже если
-    # файл в зоне узла (символ общий, сломает другие узлы).
-    contracts_by_file: dict = {}
-    for c in model.contract_symbols(graph):
-        target = sym_by_id.get(c["symbol"])
-        if target is not None:
-            contracts_by_file.setdefault(target["file"], []).append(c)
+    contracts = {c["symbol"]: c for c in model.contract_symbols(graph)}
 
     violations = []
     changed_paths = set()
@@ -159,25 +192,44 @@ def verify(graph: dict, node: dict, diff_text: str,
             })
             continue
 
-        # Файл в зоне — проверить, не изменилась ли сигнатура контракта.
-        new_text = _apply_diff(_read_original(original_dir, path), f["hunks"])
-        sigs = _local_signatures(new_text)
-        for c in contracts_by_file.get(path, []):
-            target = sym_by_id[c["symbol"]]
-            local = c["symbol"][len(_module_id(path)) + 1:] \
-                if c["symbol"].startswith(_module_id(path) + ".") else c["symbol"]
-            new_sig = sigs.get(local)
-            if model.signature_hash(new_sig) != c["signature_hash"]:
+        # Файл в зоне: разбор до символов.
+        ranges = _changed_line_ranges(f["hunks"])
+        touched = _touched_symbols(graph, path, ranges)
+        if not touched:
+            continue
+
+        new_text = None
+        for s in touched:
+            if s["node"] != node["name"]:
                 violations.append({
-                    "symbol": c["symbol"],
-                    "reason": "contract_signature_changed",
+                    "symbol": s["id"],
+                    "path": path,
+                    "reason": "foreign_symbol_in_shared_file",
+                    "owner": s["node"],
                 })
+                continue
+            if s["id"] in contracts:
+                # Сигнатура контракта: реконструируем новое содержимое один раз.
+                if new_text is None:
+                    new_text = _apply_diff(
+                        _read_original(original_dir, path), f["hunks"])
+                    local_sigs = _local_signatures(new_text)
+                local = s["id"][len(_module_id(path)) + 1:] \
+                    if s["id"].startswith(_module_id(path) + ".") else s["id"]
+                if model.signature_hash(local_sigs.get(local)) \
+                        != contracts[s["id"]]["signature_hash"]:
+                    violations.append({
+                        "symbol": s["id"],
+                        "reason": "contract_signature_changed",
+                    })
 
     return {
         "schema_version": "1",
         "ok": not violations,
         "changed": sorted(changed_paths),
         "violations": violations,
+        "unresolved": model.unresolved_imports(graph),
+        "complete": not model.graph_incomplete(graph),
     }
 
 
