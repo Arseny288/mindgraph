@@ -316,7 +316,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--list-providers", action="store_true")
     ap.add_argument("--version", action="version", version=f"mindgraph {__version__}")
 
-    sub = ap.add_subparsers(dest="command", required=True)
+    sub = ap.add_subparsers(dest="command")
 
     p = sub.add_parser("scan", help="построить/обновить graph.json")
     p.add_argument("dir", nargs="?", default=".")
@@ -392,6 +392,10 @@ def main(argv=None) -> int:
     if getattr(args, "list_providers", False):
         _list_providers()
         return EXIT_OK
+
+    if args.command is None:
+        print("mindgraph: укажите подкоманду (см. --help)", file=sys.stderr)
+        return EXIT_USAGE
 
     return _DISPATCH[args.command](args)
 
