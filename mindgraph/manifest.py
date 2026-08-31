@@ -74,9 +74,10 @@ def match_any(manifest_nodes: list, file: str) -> dict | None:
 
 
 def preassign(real_symbols: list, manifest_nodes: list) -> dict:
-    """``{symbol_id: node_title}`` для символов, покрытых манифестом.
+    """``{symbol_id: node_id}`` для символов, покрытых манифестом.
 
-    Символ приписывается узлу по ФАЙЛУ (own_paths); модель его не увидит.
+    Символ приписывается узлу по ФАЙЛУ (own_paths) и по СТАБИЛЬНОМУ id; модель
+    его не увидит.
     """
     pinned: dict = {}
     by_file: dict = {}
@@ -89,5 +90,5 @@ def preassign(real_symbols: list, manifest_nodes: list) -> dict:
         for f, sids in by_file.items():
             if spec.match_file(f):
                 for sid in sids:
-                    pinned.setdefault(sid, n["title"])
+                    pinned.setdefault(sid, n["id"])
     return pinned

@@ -282,12 +282,16 @@ def build_graph(root: str, provider_name: str = "deepseek", no_llm: bool = False
             if manifest_nodes:
                 real = [s for s in symbols if not s.get("synthetic")]
                 pinned = manifest.preassign(real, manifest_nodes)
-                for n in manifest_nodes:
-                    node_id_override[n["title"]] = n["id"]
                 result = group_repo(
                     symbols, symbol_edges, provider, cache_base=cache_base,
                     node_min=node_min, node_max=node_max, pinned=pinned,
-                    existing_nodes=[n["title"] for n in manifest_nodes])
+                    existing_nodes=[{"id": n["id"], "title": n["title"]}
+                                    for n in manifest_nodes])
+                # Стабильные id приходят из узлов результата (title мог
+                # уточниться моделью, id — нет).
+                for n in result["nodes"]:
+                    if "id" in n:
+                        node_id_override[n["name"]] = n["id"]
             else:
                 result = group_repo(symbols, symbol_edges, provider,
                                     cache_base=cache_base,
