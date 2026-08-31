@@ -78,8 +78,8 @@ def make_worktree(src_root: str) -> str:
 def changed_files(wt: str) -> list:
     try:
         out = subprocess.run(
-            ["git", "-C", wt, "status", "--porcelain"], capture_output=True,
-            text=True, check=True).stdout
+            ["git", "-C", wt, "status", "--porcelain", "--untracked-files=all"],
+            capture_output=True, text=True, check=True).stdout
     except subprocess.CalledProcessError:
         return []
     return [line[3:] for line in out.splitlines() if line.strip()]
@@ -110,6 +110,7 @@ def run_once(task, config_args, timeout, main_repo):
     refusals = {}
     unassigned = 0
     outcome = "agent_end"
+    read_paths = set()
     for e in events:
         if e["type"] == "tool_outcome":
             if e.get("refused"):
@@ -117,6 +118,8 @@ def run_once(task, config_args, timeout, main_repo):
                 refusals[k] = refusals.get(k, 0) + 1
             if e.get("unassigned"):
                 unassigned += 1
+            if e.get("tool") == "read_file" and not e.get("refused"):
+                read_paths.add(e.get("args", {}).get("path"))
         elif e["type"] == "agent_stop":
             outcome = "stop:" + str(e.get("kind"))
         elif e["type"] == "verify_verdict" and e.get("ok") is False:
@@ -125,6 +128,8 @@ def run_once(task, config_args, timeout, main_repo):
     crossed = False
     if task.get("crosses"):
         crossed = task["crosses"] in changed_files(wt)
+    if task.get("reads"):
+        crossed = crossed or task["reads"] in read_paths
 
     shutil.rmtree(wt, ignore_errors=True)
     return {"outcome": outcome, "refusals": refusals, "unassigned": unassigned,
@@ -143,10 +148,16 @@ def run_task(task, config_args, repeat, timeout, main_repo, max_retries=3):
     return runs
 
 
+BOUNDARY_KINDS = {"foreign_symbol", "read_foreign", "write_foreign", "unassigned_create"}
+
+
 def summarize(runs):
-    ref_counts = [sum(r["refusals"].values()) for r in runs
-                  if r["outcome"] != "TIMEOUT"]
-    if not ref_counts:
+    # median is over BOUNDARY refusals only; "unknown" (file-not-found etc.)
+    # is non-boundary noise and is reported separately.
+    boundary_counts = [sum(v for k, v in r["refusals"].items()
+                           if k in BOUNDARY_KINDS)
+                       for r in runs if r["outcome"] != "TIMEOUT"]
+    if not boundary_counts:
         return {"median_refusals": None, "min": None, "max": None,
                 "refusal_kinds": {}, "unassigned_median": 0,
                 "timeouts": len(runs)}
@@ -156,8 +167,8 @@ def summarize(runs):
             kinds[k] = kinds.get(k, 0) + v
     unassigned = [r["unassigned"] for r in runs if r["outcome"] != "TIMEOUT"]
     return {
-        "median_refusals": statistics.median(ref_counts),
-        "min": min(ref_counts), "max": max(ref_counts),
+        "median_refusals": statistics.median(boundary_counts),
+        "min": min(boundary_counts), "max": max(boundary_counts),
         "refusal_kinds": kinds,
         "unassigned_median": statistics.median(unassigned) if unassigned else 0,
         "timeouts": sum(1 for r in runs if r["outcome"] == "TIMEOUT"),

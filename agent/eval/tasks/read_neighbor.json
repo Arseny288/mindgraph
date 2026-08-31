@@ -3,5 +3,5 @@
   "node": "Authentication",
   "prompt": "Read billing/invoice.py and describe what make_invoice does.",
   "control": false,
-  "crosses": "billing/invoice.py"
+  "reads": "billing/invoice.py"
 }
