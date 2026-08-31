@@ -28,25 +28,25 @@ const boundary: Boundary = {
   ],
 };
 
-test("matchesGlob: ** и каталог/**", () => {
+test("matchesGlob: ** and dir/**", () => {
   assert.equal(matchesGlob("auth/login.py", "auth/**"), true);
   assert.equal(matchesGlob("auth/sub/x.py", "auth/**"), true);
   assert.equal(matchesGlob("billing/x.py", "auth/**"), false);
   assert.equal(matchesGlob("anything", "**"), true);
 });
 
-test("checkEdit: вне allow_write — отказ", () => {
+test("checkEdit: outside allow_write — refusal", () => {
   const d = checkEdit(boundary, "billing/invoice.py", "a", "b");
   assert.equal(d.ok, false);
   if (!d.ok) assert.equal(d.reason, "outside_node_zone");
 });
 
-test("checkEdit: в зоне без чужого символа — ok", () => {
+test("checkEdit: in zone without a foreign symbol — ok", () => {
   const d = checkEdit(boundary, "auth/login.py", "a\nb\n", "a\nc\n");
   assert.equal(d.ok, true);
 });
 
-test("checkEdit: правка чужого символа в смешанном файле — отказ", () => {
+test("checkEdit: editing a foreign symbol in a mixed file — refusal", () => {
   const oldText = "def own():\n    pass\n\ndef bill_util():\n    pass\n";
   const newText = "def own():\n    pass\n\ndef bill_util(x):\n    pass\n";
   const d = checkEdit(boundary, "auth/shared.py", oldText, newText);
@@ -57,21 +57,21 @@ test("checkEdit: правка чужого символа в смешанном 
   }
 });
 
-test("checkEdit: правка своего символа в смешанном файле — ok", () => {
+test("checkEdit: editing your own symbol in a mixed file — ok", () => {
   const oldText = "def own():\n    pass\n\ndef bill_util():\n    pass\n";
   const newText = "def own(x):\n    pass\n\ndef bill_util():\n    pass\n";
   const d = checkEdit(boundary, "auth/shared.py", oldText, newText);
   assert.equal(d.ok, true);
 });
 
-test("checkCreate: в allow_create — ok, вне — unassigned", () => {
+test("checkCreate: in allow_create — ok, outside — unassigned", () => {
   assert.equal(checkCreate(boundary, "auth/new.py").ok, true);
   const d = checkCreate(boundary, "app/new.py");
   assert.equal(d.ok, false);
   if (!d.ok) assert.equal(d.reason, "outside_node_zone");
 });
 
-test("changedLineRange находит первый/последний изменённый", () => {
+test("changedLineRange finds the first/last changed line", () => {
   assert.deepEqual(changedLineRange("a\nb\nc", "a\nb\nc"), null);
   assert.deepEqual(changedLineRange("a\nb\nc", "a\nB\nc"), [2, 2]);
   assert.deepEqual(changedLineRange("a\nb\nc", "a\nB\nC"), [2, 3]);

@@ -1,10 +1,10 @@
-"""Тесты статик-сервера вьюера (serve.py).
+"""Viewer static-server tests (serve.py).
 
-Проверяют два инварианта фазы 0.1:
-1. статика вьюера лежит ВНУТРИ пакета и резолвится через importlib.resources,
-   а не по пути относительно исходника (иначе ``pip install .`` без ``-e``
-   ломает ``--serve``);
-2. сервер отдаёт index.html, все статические ассеты и /graph.json со статусом
+They verify two invariants of phase 0.1:
+1. the viewer's static files live INSIDE the package and resolve via
+   importlib.resources, not relative to the source file (otherwise
+   ``pip install .`` without ``-e`` breaks ``--serve``);
+2. the server serves index.html, all static assets and /graph.json with status
    200.
 """
 
@@ -47,23 +47,23 @@ def _get(port, path):
 
 def test_viewer_resources_are_inside_package():
     vdir = serve.viewer_dir()
-    assert os.path.isdir(vdir), f"viewer_dir() не каталог: {vdir!r}"
+    assert os.path.isdir(vdir), f"viewer_dir() is not a directory: {vdir!r}"
     assert "site-packages" in vdir or "mindgraph" in os.path.basename(
         os.path.dirname(vdir))
     for name in ("index.html", "main.jsx", "nodes.jsx", "theme.js"):
-        assert os.path.isfile(os.path.join(vdir, name)), f"нет ассета {name}"
+        assert os.path.isfile(os.path.join(vdir, name)), f"asset {name} missing"
     for name in ("app.js", "reactflow.css"):
-        assert os.path.isfile(os.path.join(vdir, "dist", name)), f"нет бандла {name}"
+        assert os.path.isfile(os.path.join(vdir, "dist", name)), f"bundle {name} missing"
 
 
 def test_no_cdn_references_in_viewer():
-    """0.2: вьюер не должен тянуть react/reactflow/dagre с CDN на рантайме."""
+    """0.2: the viewer must not pull react/reactflow/dagre from a CDN at runtime."""
     vdir = serve.viewer_dir()
     banned = ("esm.sh", "unpkg.com", "cdn.")
     for name in ("index.html", "dist/app.js"):
         content = open(os.path.join(vdir, name), encoding="utf-8").read()
         for token in banned:
-            assert token not in content, f"{name} ссылается на CDN: {token}"
+            assert token not in content, f"{name} references a CDN: {token}"
 
 
 def test_index_served(server):
@@ -78,7 +78,7 @@ def test_static_assets_served(server):
                  "dist/app.js", "dist/reactflow.css"):
         status, body = _get(server, f"/{name}")
         assert status == 200, f"/{name} -> {status}"
-        assert body, f"/{name} пустое тело"
+        assert body, f"/{name} empty body"
 
 
 def test_graph_json_served_from_repo(server):

@@ -1,8 +1,8 @@
-// mindgraph.ts — тонкая обёртка над Python-CLI (фаза 2.2).
+// mindgraph.ts — thin wrapper over the Python CLI (phase 2.2).
 //
-// Вызывает `mindgraph <subcommand> --json` подпроцессом, парсит stdout как
-// JSON, пробрасывает stderr в лог, проверяет schema_version и громко падает
-// при несовпадении. Никакой другой связи между TS и Python нет.
+// Calls `mindgraph <subcommand> --json` as a subprocess, parses stdout as JSON,
+// forwards stderr to the log, checks schema_version and fails loudly on
+// mismatch. There is no other link between TS and Python.
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -18,9 +18,9 @@ export class MindGraphError extends Error {
 }
 
 export interface ClientOptions {
-  /** Путь к бинарнику mindgraph (по умолчанию "mindgraph" из PATH). */
+  /** Path to the mindgraph binary (default "mindgraph" from PATH). */
   bin?: string;
-  /** Корень ГЛАВНОГО репозитория (где .mindgraph/graph.json). */
+  /** Root of the MAIN repo (where .mindgraph/graph.json lives). */
   dir: string;
 }
 
@@ -46,7 +46,7 @@ export class MindGraphClient {
       maxBuffer: 256 * 1024 * 1024,
       encoding: "utf8",
     }).catch((err: any) => {
-      // exit 3 (нарушение границы) всё равно несёт валидный JSON в stdout.
+      // exit 3 (boundary violation) still carries valid JSON on stdout.
       if (err && typeof err.stdout === "string" && err.stdout.length > 0) {
         return err as { stdout: string; stderr: string; code: number };
       }
@@ -65,13 +65,13 @@ export class MindGraphClient {
       data = JSON.parse(stdout);
     } catch {
       throw new MindGraphError(
-        `mindgraph: невалидный JSON в stdout: ${stdout.slice(0, 300)}`,
+        `mindgraph: invalid JSON on stdout: ${stdout.slice(0, 300)}`,
         code,
       );
     }
     if (data == null || typeof data.schema_version !== "string") {
       throw new MindGraphError(
-        `mindgraph: ответ без schema_version (${stdout.slice(0, 300)})`,
+        `mindgraph: response without schema_version (${stdout.slice(0, 300)})`,
         code,
       );
     }
@@ -98,7 +98,7 @@ export class MindGraphClient {
     return this.run(["tests", "--for-node", nodeId, "--json"]).then((r) => r.data);
   }
 
-  /** verify: возвращает вердикт + код возврата (3 = нарушение границы). */
+  /** verify: returns the verdict + exit code (3 = boundary violation). */
   async verify(nodeId: string, diff: string, worktree?: string): Promise<RunResult> {
     const args = ["verify", "--node", nodeId, "--diff", "-"];
     if (worktree) args.push("--worktree", worktree);

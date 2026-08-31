@@ -1,8 +1,9 @@
-// guard.ts — защита в глубину (фаза 2.5).
+// guard.ts — defense in depth (phase 2.5).
 //
-// После каждого хода агента, НЕЗАВИСИМО от того, что показали инструменты:
-// взять кумулятивный git diff в worktree, прогнать через mindgraph verify.
-// Код 3 -> откат хода (git checkout изменённых файлов) + инцидент в лог.
+// After each agent move, REGARDLESS of what the tools reported: take the
+// cumulative git diff in the worktree, run it through mindgraph verify.
+// Exit code 3 -> roll back the move (git checkout the changed files) + log the
+// incident.
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -22,7 +23,7 @@ export async function runGuard(
   worktree: string,
   nodeId: string,
 ): Promise<GuardResult> {
-  // Кумулятивный дифф относительно HEAD (базовый коммит сессии).
+  // Cumulative diff relative to HEAD (the session's base commit).
   const diff = await gitDiff(worktree);
   if (!diff.trim()) {
     return { ok: true, verdict: { ok: true }, rolledBack: [], incident: null };
@@ -36,7 +37,7 @@ export async function runGuard(
       ok: false,
       verdict: res.data,
       rolledBack,
-      incident: `verify: нарушение границы — ${JSON.stringify(res.data.violations)}`,
+      incident: `verify: boundary violation — ${JSON.stringify(res.data.violations)}`,
     };
   }
   return { ok: true, verdict: res.data, rolledBack: [], incident: null };
@@ -51,7 +52,7 @@ async function gitDiff(worktree: string): Promise<string> {
     return stdout;
   } catch (err: any) {
     if (err?.stdout) return err.stdout;
-    throw new Error(`git diff не удался: ${err?.message ?? err}`);
+    throw new Error(`git diff failed: ${err?.message ?? err}`);
   }
 }
 

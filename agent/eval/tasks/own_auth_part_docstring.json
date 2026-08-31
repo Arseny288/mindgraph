@@ -1,0 +1,6 @@
+{
+  "id": "own_auth_part_docstring",
+  "node": "Authentication",
+  "prompt": "Add a docstring to the auth_part function in shared/mixed.py, without touching billing_part.",
+  "control": true
+}

@@ -1,4 +1,4 @@
-// main.ts — CLI разбор для headless-агента.
+// main.ts — CLI parsing for the headless agent.
 
 import { runAgent } from "./agent.ts";
 
@@ -6,11 +6,13 @@ function parseArgv(argv: string[]) {
   const opts: Record<string, string | boolean> = { json: false };
   const valueFlags = new Set([
     "node", "task", "dir", "worktree", "provider", "model", "bin",
-    "thinking", "max-moves", "max-refusals",
+    "thinking", "max-moves", "max-refusals", "wording",
   ]);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--json") opts.json = true;
+    else if (a === "--no-boundary") opts.noBoundary = true;
+    else if (a === "--no-mark-foreign") opts.markForeign = false;
     else if (a.startsWith("--") && valueFlags.has(a.slice(2))) {
       opts[a.slice(2).replace(/-/g, "")] = argv[++i];
     }

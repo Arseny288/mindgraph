@@ -1,14 +1,16 @@
-"""Сборка и запись graph.json (§5 спеки) — единственный контракт с вьюером.
+"""Assembly and writing of graph.json (§5 of the spec) — the only contract with the viewer.
 
-Вьюер не знает про Python и ничего не вычисляет сам: shared/owners по
-символам, агрегированные рёбра между узлами с весами и `weak`, все статы —
-всё уже посчитано здесь. extract.py/group.py/shared.py остаются read-only
-анализаторами; emit.py их оркестрирует и решает, что писать на диск и куда.
+The viewer knows nothing about Python and computes nothing itself: shared/owners
+by symbol, aggregated edges between nodes with weights and `weak`, all stats —
+everything is already computed here. extract.py/group.py/shared.py remain
+read-only analyzers; emit.py orchestrates them and decides what to write to disk
+and where.
 
-Кэш: если ``<root>/.mindgraph/graph.json`` уже есть и его ``repo.repo_hash``
-совпадает с текущим — переиспользуем без пересчёта (если не ``--force``).
-``repo_hash`` — sha256 по (путь, размер, mtime) просканированных .py файлов,
-не по содержимому: дёшево, и как признак "не менялось" достаточно.
+Cache: if ``<root>/.mindgraph/graph.json`` already exists and its
+``repo.repo_hash`` matches the current one — we reuse it without recomputing
+(unless ``--force``). ``repo_hash`` is a sha256 over (path, size, mtime) of the
+scanned .py files, not over their content: it is cheap, and as a "has not
+changed" signal it suffices.
 """
 
 from __future__ import annotations
@@ -29,7 +31,7 @@ from .shared import node_of, compute_owners_by_node, ENTRY_POINT_PATTERNS, _is_e
 
 log = logging.getLogger("mindgraph.emit")
 
-GRAPH_VERSION = 2  # +domains, +domain_edges, +node.parent, +grouping (аддитивно, §5 спеки)
+GRAPH_VERSION = 2  # +domains, +domain_edges, +node.parent, +grouping (additive, §5 of the spec)
 
 
 def graph_path(root: str) -> str:
@@ -37,7 +39,7 @@ def graph_path(root: str) -> str:
 
 
 def _resolve_model(provider_name: str, model: str | None) -> str:
-    """Эффективная модель провайдера (явная или дефолтная по провайдеру)."""
+    """The effective model of the provider (explicit or the provider's default)."""
     if model:
         return model
     return DEEPSEEK_MODEL if provider_name == "deepseek" else ANTHROPIC_MODEL
@@ -46,17 +48,17 @@ def _resolve_model(provider_name: str, model: str | None) -> str:
 def compute_config_fingerprint(provider_name: str, model: str | None,
                                entry_points, node_min: int, node_max: int,
                                no_llm: bool) -> str:
-    """Хэш эффективного конфига, влияющего на результат сборки graph.json.
+    """Hash of the effective config that affects the graph.json build result.
 
-    ``repo_hash`` покрывает ТОЛЬКО исходники (что читаем); этот хэш покрывает
-    КАК читаем (провайдер, модель, версии промптов, entry_points, диапазон
-    узлов, версия extractor'а/схемы). Смена любого из них должна инвалидировать
-    кэш наравне с правкой кода: старый graph.json со старой группировкой и
-    owners нельзя молча переиспользовать.
+    ``repo_hash`` covers ONLY the sources (what we read); this hash covers HOW we
+    read (provider, model, prompt versions, entry_points, node range, the
+    extractor/schema version). Changing any of them must invalidate the cache on
+    par with a code edit: an old graph.json with the old grouping and owners
+    cannot be silently reused.
 
-    Версии промптов берутся не константой, а хэшем РЕАЛЬНОГО текста промптов —
-    правка системного промпта в group.py/domains.py сама меняет fingerprint
-    без ручной синхронизации счётчика.
+    Prompt versions are not taken as a constant but as a hash of the REAL prompt
+    text — editing the system prompt in group.py/domains.py changes the
+    fingerprint itself, without manual counter synchronization.
     """
     grouping_prompt = _system_prompt(None, node_min, node_max)
     h = hashlib.sha256()
@@ -77,10 +79,10 @@ def compute_config_fingerprint(provider_name: str, model: str | None,
 
 
 def compute_repo_hash(root: str, extra_ignore=()) -> str:
-    """sha256((relpath, size, mtime) по .py файлам + содержимое игнор-файлов).
+    """sha256((relpath, size, mtime) over .py files + the content of ignore files).
 
-    Игнор-файлы (.gitignore/.mindgraphignore) включены содержимым: правка
-    правил исключения инвалидирует кэш наравне с правкой кода.
+    Ignore files (.gitignore/.mindgraphignore) are included by content: editing
+    the exclusion rules invalidates the cache on par with a code edit.
     """
     h = hashlib.sha256()
     for path in _iter_python_files(root, extra_ignore):
@@ -111,9 +113,9 @@ def _slug(name: str) -> str:
 
 
 def _save_run(root: str, provider_name: str, node_count, result: dict) -> str:
-    """Сырой ответ модели в ``.mindgraph/runs/`` — аудит/отладка группировки:
-    если модель прислала невалидный JSON или расклад "поплыл", видно, что
-    именно она вернула, без повторного платного вызова.
+    """The raw model response in ``.mindgraph/runs/`` — grouping audit/debug:
+    if the model sent invalid JSON or the layout "drifted", we can see exactly
+    what it returned, without a repeated paid call.
     """
     runs_dir = os.path.join(root, ".mindgraph", "runs")
     os.makedirs(runs_dir, exist_ok=True)
@@ -133,8 +135,8 @@ def _save_run(root: str, provider_name: str, node_count, result: dict) -> str:
 
 
 def _save_domain_run(root: str, provider_name: str, result: dict) -> str:
-    """Как :func:`_save_run`, но для второго (доменного) запроса — своя
-    директория, чтобы не перепутать сырые ответы двух разных промптов."""
+    """Like :func:`_save_run`, but for the second (domain) request — its own
+    directory, so as not to mix up the raw responses of two different prompts."""
     runs_dir = os.path.join(root, ".mindgraph", "runs")
     os.makedirs(runs_dir, exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")[:-3] + "Z"
@@ -151,11 +153,11 @@ def _save_domain_run(root: str, provider_name: str, result: dict) -> str:
 
 
 def _has_llm_grouping(graph: dict) -> bool:
-    """Есть ли в ``graph.json`` узлы от модели (а не package-proxy).
+    """Whether ``graph.json`` has nodes from the model (rather than package-proxy).
 
-    Явное поле ``grouping`` — признак, который пишется с этой версии. Для
-    graph.json без него (версия ≤2) — эвристика: package-proxy оставляет
-    ``summary`` узлов пустыми, LLM-группировка их заполняет.
+    The explicit ``grouping`` field is the marker written since this version. For
+    a graph.json without it (version ≤2) — a heuristic: package-proxy leaves node
+    ``summary`` fields empty, LLM grouping fills them in.
     """
     if graph.get("grouping") == "llm":
         return True
@@ -165,11 +167,11 @@ def _has_llm_grouping(graph: dict) -> bool:
 
 
 def _preserved_grouping(graph: dict):
-    """Извлечь LLM-разметку существующего graph.json для переноса при --no-llm.
+    """Extract the LLM layout of an existing graph.json for transfer under --no-llm.
 
-    Возвращает ``(node_of_symbol, node_summary, node_parent, domains)`` —
-    ровно то, что надо пересохранить, чтобы пересчёт статики не затирал
-    смысловые узлы модели (см. :func:`build_graph`, параметр ``preserve_from``).
+    Returns ``(node_of_symbol, node_summary, node_parent, domains)`` — exactly
+    what must be re-saved so that a static recompute does not wipe the model's
+    semantic nodes (see :func:`build_graph`, the ``preserve_from`` parameter).
     """
     symbol_node = {}
     for s in graph.get("symbols", []):
@@ -186,10 +188,10 @@ def _preserved_grouping(graph: dict):
 
 def _restore_domains(out_nodes: list, preserved_parent: dict,
                      preserved_domains: list) -> list:
-    """Вернуть домены, сохранив прежний ``parent`` у существующих узлов L1.
+    """Restore domains, keeping the previous ``parent`` of existing L1 nodes.
 
-    Новые узлы (символы, появившиеся после изменения кода) уходят в служебный
-    домен :data:`UNASSIGNED_DOMAIN` до следующего ``--regroup``.
+    New nodes (symbols that appeared after a code change) go to the service
+    domain :data:`UNASSIGNED_DOMAIN` until the next ``--regroup``.
     """
     valid = {d["id"] for d in preserved_domains}
     fallback_id = "d_" + _slug(UNASSIGNED_DOMAIN)
@@ -216,32 +218,33 @@ def build_graph(root: str, provider_name: str = "deepseek", no_llm: bool = False
                 entry_points=None,
                 node_min: int = 5, node_max: int = 15,
                 config_fingerprint: str | None = None) -> dict:
-    """Extract -> (group) -> shared -> единый graph.json (в памяти, без записи).
+    """Extract -> (group) -> shared -> a single graph.json (in memory, without writing).
 
-    Если LLM-провайдер недоступен (нет ключа/пакета) и ``no_llm`` не
-    выставлен явно — тихо откатываемся на package-proxy (см. shared.py) и
-    пишем предупреждение в graph.warnings, а не падаем (§1 спеки: никогда не
-    падать целиком).
+    If the LLM provider is unavailable (no key/package) and ``no_llm`` is not set
+    explicitly — we silently fall back to package-proxy (see shared.py) and write
+    a warning to graph.warnings instead of crashing (§1 of the spec: never crash
+    wholesale).
 
-    ``preserve_from`` — существующий graph.json с LLM-разметкой. Если задан,
-    LLM-вызов не делается вообще: статика (символы/рёбра/shared/статы)
-    пересчитывается заново, а назначение символов по узлам, summary и домены
-    берутся из него. Так ``--no-llm``/обычный пересчёт никогда не затирает
-    LLM-разметку; полная перегруппировка — только отдельным ``--regroup``.
+    ``preserve_from`` — an existing graph.json with LLM layout. When set, no LLM
+    call is made at all: the statics (symbols/edges/shared/stats) are recomputed
+    from scratch, while the assignment of symbols to nodes, summaries and domains
+    are taken from it. This way ``--no-llm``/an ordinary recompute never wipes
+    the LLM layout; a full regrouping is only a separate ``--regroup``.
 
-    ``model`` — переопределение дефолтной модели провайдера; ``cache_base`` —
-    каталог кэша LLM-ответов (см. llmcache.py); ``entry_points`` — glob-паттерны
-    точек входа (по умолчанию ENTRY_POINT_PATTERNS); ``config_fingerprint`` —
-    хэш эффективного конфига (см. compute_config_fingerprint), пишется в
-    ``repo`` и сверяется при загрузке кэша (иначе смена провайдера/модели
-    молча вернула бы старую группировку).
+    ``model`` — an override of the provider's default model; ``cache_base`` — the
+    LLM-response cache directory (see llmcache.py); ``entry_points`` — glob
+    patterns of entry points (default ENTRY_POINT_PATTERNS);
+    ``config_fingerprint`` — the effective config hash (see
+    compute_config_fingerprint), written into ``repo`` and checked when loading
+    the cache (otherwise a provider/model change would silently return the old
+    grouping).
     """
     root = os.path.abspath(root)
-    log.info("этап A: статический анализ")
+    log.info("stage A: static analysis")
     extracted = extract_repo(root, extra_ignore)
     symbols, symbol_edges = extracted["symbols"], extracted["symbol_edges"]
     warnings = list(extracted["warnings"])
-    log.info("этап A: %d символов, %d рёбер", len(symbols), len(symbol_edges))
+    log.info("stage A: %d symbols, %d edges", len(symbols), len(symbol_edges))
     entry_patterns = ENTRY_POINT_PATTERNS if entry_points is None else entry_points
     if config_fingerprint is None:
         config_fingerprint = compute_config_fingerprint(
@@ -249,14 +252,14 @@ def build_graph(root: str, provider_name: str = "deepseek", no_llm: bool = False
 
     node_of_symbol: dict = {}
     node_meta: dict = {}
-    node_id_override: dict = {}  # имя узла -> стабильный id (из манифеста)
+    node_id_override: dict = {}  # node name -> stable id (from the manifest)
     unassigned = 0
     grouping = "package"
     preserved_parent: dict = {}
     preserved_domains: list = []
 
     if preserve_from is not None:
-        log.info("этап B: перенос существующей LLM-разметки (без вызова модели)")
+        log.info("stage B: transferring the existing LLM layout (no model call)")
         preserved_node, preserved_summary, preserved_parent, preserved_domains = \
             _preserved_grouping(preserve_from)
         for s in symbols:
@@ -269,13 +272,13 @@ def build_graph(root: str, provider_name: str = "deepseek", no_llm: bool = False
                          and node_of_symbol[s["id"]] == UNASSIGNED_NODE)
         grouping = "llm"
     elif not no_llm:
-        log.info("этап B: группировка (%s)", provider_name)
+        log.info("stage B: grouping (%s)", provider_name)
         try:
             provider = make_provider(provider_name) if model is None \
                 else make_provider(provider_name, model=model)
-        except Exception as e:  # нет ключа, нет пакета, и т.п. — не фатально
+        except Exception as e:  # no key, no package, etc. — not fatal
             warnings.append(
-                f"LLM-провайдер {provider_name!r} недоступен ({e}); работаю как --no-llm")
+                f"LLM provider {provider_name!r} is unavailable ({e}); running as --no-llm")
             provider = None
         if provider is not None:
             manifest_nodes = manifest.load(root)
@@ -287,8 +290,8 @@ def build_graph(root: str, provider_name: str = "deepseek", no_llm: bool = False
                     node_min=node_min, node_max=node_max, pinned=pinned,
                     existing_nodes=[{"id": n["id"], "title": n["title"]}
                                     for n in manifest_nodes])
-                # Стабильные id приходят из узлов результата (title мог
-                # уточниться моделью, id — нет).
+                # Stable ids come from the result's nodes (the title may have
+                # been refined by the model, the id — not).
                 for n in result["nodes"]:
                     if "id" in n:
                         node_id_override[n["name"]] = n["id"]
@@ -303,7 +306,7 @@ def build_graph(root: str, provider_name: str = "deepseek", no_llm: bool = False
             unassigned = result["unassigned_count"]
             grouping = "llm"
 
-    if not node_of_symbol:  # --no-llm или провайдер недоступен
+    if not node_of_symbol:  # --no-llm or the provider is unavailable
         node_of_symbol = {s["id"]: node_of(s["file"], "package") for s in symbols}
         node_meta = {name: "" for name in set(node_of_symbol.values())}
         grouping = "package"
@@ -350,16 +353,16 @@ def build_graph(root: str, provider_name: str = "deepseek", no_llm: bool = False
     out_node_edges = [{"from": a, "to": b, "weight": w, "weak": w == 1}
                       for (a, b), w in sorted(agg.items())]
 
-    # Этап B2 (domains.py) — ОТДЕЛЬНЫЙ второй запрос к модели, группирующий
-    # уже готовые узлы L1 в домены L0. Символы туда не передаются вообще, и
-    # assign_domains не должен их трогать — assert ниже это гарантирует:
-    # если разметка символов по узлам L1 хоть на один id разъехалась
-    # до/после вызова, эта сборка graph.json обязана упасть, а не тихо
-    # разъехаться с тем, что уже проверено на этапе B (§3 спеки).
+    # Stage B2 (domains.py) — a SEPARATE second request to the model, grouping the
+    # already-ready L1 nodes into L0 domains. Symbols are not passed there at all,
+    # and assign_domains must not touch them — the assert below guarantees this:
+    # if the symbol-to-L1-node layout diverged by even one id before/after the
+    # call, this graph.json build must fail rather than silently diverge from
+    # what was already verified at stage B (§3 of the spec).
     if preserve_from is not None:
         domains = _restore_domains(out_nodes, preserved_parent, preserved_domains)
     else:
-        log.info("этап B2: домены")
+        log.info("stage B2: domains")
         before_symbols = {n["id"]: set(n["symbols"]) for n in out_nodes}
         domains_result = assign_domains(out_nodes, out_node_edges,
                                         provider_name=provider_name, no_llm=no_llm,
@@ -369,8 +372,8 @@ def build_graph(root: str, provider_name: str = "deepseek", no_llm: bool = False
         warnings.extend(domains_result["warnings"])
         after_symbols = {n["id"]: set(n["symbols"]) for n in out_nodes}
         assert before_symbols == after_symbols, (
-            "assign_domains изменил множество символов хотя бы одного узла L1 — "
-            "инвариант нарушен (домены не должны трогать назначение символов)")
+            "assign_domains changed the symbol set of at least one L1 node — "
+            "invariant violated (domains must not touch symbol assignment)")
         domains = domains_result["domains"]
 
     domain_id_of_node_id = {n["id"]: n.get("parent") for n in out_nodes}
@@ -424,15 +427,15 @@ def load_or_build(root: str, provider_name: str = "deepseek", no_llm: bool = Fal
                   force: bool = False, regroup: bool = False, extra_ignore=(),
                   model: str | None = None, cache_base=None, entry_points=None,
                   node_min: int = 5, node_max: int = 15):
-    """Вернуть ``(graph, from_cache: bool)``. Пишет на диск при пересчёте.
+    """Return ``(graph, from_cache: bool)``. Writes to disk on recompute.
 
-    Cache-first: если ``repo_hash`` И ``config_fingerprint`` в
-    ``.mindgraph/graph.json`` совпали с текущими и нет ``--force``/``--regroup`` —
-    возвращаем кэш без пересчёта. Защита LLM-разметки (§6): ``--no-llm`` (и
-    обычный пересчёт при изменившемся хэше без ``--regroup``) пересчитывает
-    только статику, а существующие узлы модели оставляет на месте. Полный
-    пересчёт — только ``--regroup`` (и он бесплатен при неизменном коде — кэш
-    LLM-ответов по хэшу промпта).
+    Cache-first: if ``repo_hash`` AND ``config_fingerprint`` in
+    ``.mindgraph/graph.json`` match the current ones and there is no
+    ``--force``/``--regroup`` — return the cache without recomputing. LLM-layout
+    protection (§6): ``--no-llm`` (and an ordinary recompute on a changed hash
+    without ``--regroup``) recomputes only the statics, leaving the existing model
+    nodes in place. A full recompute — only ``--regroup`` (and it is free on
+    unchanged code — the LLM-response cache is keyed by prompt hash).
     """
     root = os.path.abspath(root)
     current_hash = compute_repo_hash(root, extra_ignore)
@@ -447,10 +450,10 @@ def load_or_build(root: str, provider_name: str = "deepseek", no_llm: bool = Fal
             with open(path, encoding="utf-8") as fh:
                 existing = json.load(fh)
         except (json.JSONDecodeError, OSError):
-            existing = None  # повреждённый кэш — пересчитываем молча
+            existing = None  # damaged cache — recompute silently
 
-    # --regroup: полный пересчёт LLM-разметки, всегда, даже при актуальном
-    # кэше (это и есть смысл флага — явная перегруппировка).
+    # --regroup: a full recompute of the LLM layout, always, even with an
+    # up-to-date cache (that is exactly the flag's meaning — explicit regrouping).
     if regroup:
         graph = build_graph(root, provider_name=provider_name, no_llm=False,
                             repo_hash=current_hash, extra_ignore=extra_ignore,
@@ -461,14 +464,14 @@ def load_or_build(root: str, provider_name: str = "deepseek", no_llm: bool = Fal
         write_graph(root, graph)
         return graph, False
 
-    # Кэш актуален (код И конфиг не менялись) и --force не задан.
+    # The cache is up to date (code AND config unchanged) and --force is not set.
     if not force and existing is not None \
             and existing.get("repo", {}).get("repo_hash") == current_hash \
             and existing.get("repo", {}).get("config_fingerprint") == current_fingerprint:
         return existing, True
 
-    # Пересчёт статики. Если в graph.json уже есть LLM-узлы — переносим их
-    # (никогда не затираем); полная перегруппировка — только через --regroup.
+    # Recompute the statics. If graph.json already has LLM nodes — transfer them
+    # (never wipe); a full regrouping — only via --regroup.
     preserve_from = existing if (existing is not None and _has_llm_grouping(existing)) else None
 
     if preserve_from is not None:

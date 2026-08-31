@@ -1,7 +1,7 @@
-"""Тесты фазы 1: модель владения, impact, verify и JSON-контракт CLI.
+"""Phase 1 tests: the ownership model, impact, verify and the CLI JSON contract.
 
-Всё на фикстуре sample_repo через --no-llm (package-proxy): узлы auth, billing,
-common, cycle. common.utils — общий shared-слой.
+Everything on the sample_repo fixture via --no-llm (package-proxy): nodes auth,
+billing, common, cycle. common.utils — the shared layer.
 """
 
 import json
@@ -22,7 +22,7 @@ def graph():
     return emit.build_graph(FIXTURE, no_llm=True)
 
 
-# --- модель владения -------------------------------------------------------
+# --- the ownership model -------------------------------------------------------
 
 def test_file_owner_map(graph):
     owners = model.file_owner_map(graph)
@@ -43,10 +43,10 @@ def test_node_view_owned_contracts_foreign(graph):
     view = model.node_view(graph, node)
     assert set(view["owned_files"]) == {"auth/login.py", "auth/tokens.py"}
     assert "auth.login.login" in view["owned_symbols"]
-    # auth зависит от shared common.utils.* — это контракты узла
+    # auth depends on the shared common.utils.* — these are the node's contracts
     contract_ids = {c["symbol"] for c in view["contracts"]}
     assert "common.utils.hash_value" in contract_ids
-    # чужое — файл биллинга
+    # foreign — the billing file
     assert "billing/invoice.py" in view["foreign_files"]
 
 
@@ -56,7 +56,7 @@ def test_boundary_globs(graph):
     assert b["schema_version"] == "1"
     assert "auth/**" in b["allow_write"]
     assert b["deny_write"] == ["**"]
-    # контрактные символы лежат в common/ — их можно читать
+    # contract symbols live in common/ — they can be read
     assert any(g.startswith("common") for g in b["allow_read"])
     assert all("signature_hash" in c for c in b["contracts"])
 
@@ -71,7 +71,7 @@ def test_impact_symbol(graph):
 
 def test_impact_file_depth_one(graph):
     r = impact.impact(graph, "common/utils.py", depth=1)
-    # прямые потомки hash_value/normalize/CACHE
+    # direct descendants of hash_value/normalize/CACHE
     assert r["depth"] == 1
     assert all(s in r["files"] for s in [])
 
@@ -136,7 +136,7 @@ def test_verify_contract_signature_change_is_violation(graph, tmp_path):
             "@@ -6,1 +6,1 @@\n"
             "-def hash_value(v: str) -> str:\n"
             "+def hash_value(v: str, salt: str = \"\") -> str:\n")
-    node = model.node_by_ref(graph, "common")  # владеет common/utils.py
+    node = model.node_by_ref(graph, "common")  # owns common/utils.py
     r = verify.verify(graph, node, diff, original_dir=str(tmp_path))
     assert r["ok"] is False
     assert any(v["reason"] == "contract_signature_changed" and
@@ -150,11 +150,11 @@ def test_verify_dotdot_path_is_rejected(graph):
             "@@ -1,1 +1,1 @@\n-a\n+b\n")
     node = model.node_by_ref(graph, "auth")
     r = verify.verify(graph, node, diff, original_dir=FIXTURE)
-    # путь вне репо не должен попадать в changed
+    # a path outside the repo must not enter changed
     assert "etc/passwd" not in r["changed"]
 
 
-# --- CLI JSON-контракт -----------------------------------------------------
+# --- the CLI JSON contract -----------------------------------------------------
 
 def _run_cli(*args):
     return subprocess.run(
@@ -193,5 +193,5 @@ def test_cli_verify_returns_exit_3_on_violation():
 
 
 def test_cli_bad_args_exit_2():
-    proc = _run_cli("node")  # пропущен обязательный id
+    proc = _run_cli("node")  # the required id is omitted
     assert proc.returncode == 2

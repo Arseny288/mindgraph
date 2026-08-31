@@ -1,8 +1,8 @@
-"""Тесты гигиены секретов (фаза 0.4).
+"""Secret hygiene tests (phase 0.4).
 
-Ключ LLM читается ТОЛЬКО из окружения (.env в cli.py лишь подгружается в
-env). Явная проверка: значение ключа (маркер) никогда не попадает в
-graph.json, в сырые ответы в .mindgraph/runs/ и в логи/артефакты сессий.
+The LLM key is read ONLY from the environment (.env in cli.py is only loaded
+into env). Explicit check: the key value (marker) never lands in graph.json, in
+the raw responses in .mindgraph/runs/ and in session logs/artifacts.
 """
 
 import json
@@ -19,7 +19,7 @@ FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 
 class _FakeProvider:
-    """Возвращает валидный ответ группировки (все символы -> один узел)."""
+    """Returns a valid grouping response (all symbols -> one node)."""
 
     name = "deepseek"
     model = "deepseek-v4-flash"
@@ -29,7 +29,7 @@ class _FakeProvider:
 
     def group(self, symbols, edges, node_count=None, node_min=5, node_max=15):
         ids = [s["id"] for s in symbols if not s.get("synthetic")]
-        text = json.dumps({"nodes": [{"name": "Всё", "summary": "тест",
+        text = json.dumps({"nodes": [{"name": "All", "summary": "test",
                                       "symbols": ids}]}, ensure_ascii=False)
         return {"text": text, "usage": {"input_tokens": 1, "output_tokens": 1,
                                         "cache_read_tokens": 0,
@@ -37,14 +37,14 @@ class _FakeProvider:
 
 
 def _assert_marker_absent(text, where):
-    assert MARKER not in text, f"секрет утёк в {where}"
+    assert MARKER not in text, f"secret leaked into {where}"
 
 
 def test_secret_absent_from_graph_json_and_runs(monkeypatch, tmp_path):
     monkeypatch.setenv("DEEPSEEK_API_KEY", MARKER)
     monkeypatch.setattr(emit, "make_provider", _FakeProvider)
 
-    # Копируем фикстуру в tmp, чтобы не сорить .mindgraph в дерево тестов.
+    # Copy the fixture to tmp so as not to litter .mindgraph in the test tree.
     import shutil
     root = str(tmp_path / "repo")
     shutil.copytree(FIXTURE, root)
@@ -56,7 +56,7 @@ def test_secret_absent_from_graph_json_and_runs(monkeypatch, tmp_path):
 
     emit.write_graph(root, graph)
     with open(emit.graph_path(root), encoding="utf-8") as fh:
-        _assert_marker_absent(fh.read(), "записанный graph.json")
+        _assert_marker_absent(fh.read(), "written graph.json")
 
     runs_dir = os.path.join(root, ".mindgraph", "runs")
     if os.path.isdir(runs_dir):

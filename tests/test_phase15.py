@@ -1,5 +1,5 @@
-"""Тесты фазы 1.5: смешанные файлы, символьный verify, allow_create,
-вердикты тестов и неполнота графа.
+"""Phase 1.5 tests: mixed files, symbol-level verify, allow_create,
+test verdicts and graph incompleteness.
 """
 
 import json
@@ -19,7 +19,7 @@ def graph():
 
 
 def _mixed_graph():
-    """Синтетический граф со смешанным файлом m/shared.py (auth + billing)."""
+    """A synthetic graph with a mixed file m/shared.py (auth + billing)."""
     sym = lambda i, n, lo, hi: {
         "id": i, "kind": "function", "file": "m/shared.py",
         "lines": [lo, hi], "sig": f"{i.split('.')[-1]}()", "doc": None,
@@ -51,10 +51,10 @@ def _mixed_graph():
     }
 
 
-# --- 1. смешанные файлы -----------------------------------------------------
+# --- 1. mixed files -----------------------------------------------------
 
 def test_mixed_file_stats_metric(graph):
-    # фикстура не содержит смешанных файлов (каждый файл — один пакет)
+    # the fixture has no mixed files (each file — one package)
     s = model.mixed_file_stats(graph)
     assert s["mixed_files"] == 0
 
@@ -63,7 +63,7 @@ def test_mixed_file_detection():
     g = _mixed_graph()
     mixed = model.mixed_files(g)
     assert "m/shared.py" in mixed
-    # tie-break: при 1:1 хозяин — лексикографически первый узел "auth"
+    # tie-break: at 1:1 the owner is the lexicographically first node "auth"
     assert mixed["m/shared.py"]["owner"] == "auth"
     assert mixed["m/shared.py"]["foreign"] == {"billing": ["m.shared.bill_util"]}
 
@@ -85,11 +85,11 @@ def test_boundary_lists_mixed_and_allow_create():
     g = _mixed_graph()
     node = model.node_by_ref(g, "auth")
     b = model.boundary(g, node)
-    assert b["mixed"]  # смешанный файл перечислен
-    assert b["allow_create"] == ["m/**"]  # каталог целиком принадлежит узлу
+    assert b["mixed"]  # the mixed file is listed
+    assert b["allow_create"] == ["m/**"]  # the directory wholly belongs to the node
 
 
-# --- символьный verify ------------------------------------------------------
+# --- symbol-level verify ------------------------------------------------------
 
 def _write_new(tmp_path, content):
     p = tmp_path / "m" / "shared.py"
@@ -106,7 +106,7 @@ def test_verify_foreign_symbol_in_mixed_file_is_violation(tmp_path):
     node = model.node_by_ref(g, "auth")
     _write_new(tmp_path,
                "def auth_util():\n    pass\n\ndef bill_util(x):\n    pass\n")
-    # дифф трогает строку 4 — символ billing в смешанном файле зоны
+    # the diff touches line 4 — the billing symbol in the zone's mixed file
     diff = ("diff --git a/m/shared.py b/m/shared.py\n"
             "--- a/m/shared.py\n"
             "+++ b/m/shared.py\n"
@@ -141,7 +141,7 @@ def test_allow_create_globs_fixture(graph):
     assert model.allow_create_globs(graph, node) == ["auth/**"]
 
 
-# --- 2. вердикты тестов -----------------------------------------------------
+# --- 2. test verdicts -----------------------------------------------------
 
 def test_tests_empty_is_unverified(graph):
     node = model.node_by_ref(graph, "auth")
@@ -150,7 +150,7 @@ def test_tests_empty_is_unverified(graph):
     assert r["selection_confidence"] == 0.0
 
 
-# --- 3. неполнота графа -----------------------------------------------------
+# --- 3. graph incompleteness -----------------------------------------------------
 
 def test_impact_reports_unresolved_and_incomplete(graph):
     r = impact.impact(graph, "auth.login.verify_token")

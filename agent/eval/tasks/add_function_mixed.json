@@ -1,0 +1,6 @@
+{
+  "id": "add_function_mixed",
+  "node": "Authentication",
+  "prompt": "Add a new function helper(x) to shared/mixed.py between auth_part and billing_part.",
+  "control": true
+}

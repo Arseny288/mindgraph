@@ -1,4 +1,4 @@
-"""Тесты манифеста стабильных узлов (фаза 1.5, п.5)."""
+"""Stable-node manifest tests (phase 1.5, item 5)."""
 
 import json
 import os
@@ -14,7 +14,7 @@ FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 _MANIFEST = """\
 nodes:
   - id: myauth
-    title: Аутентификация
+    title: Authentication
     own_paths: ["auth/**"]
 """
 
@@ -39,8 +39,8 @@ class _ManifestProvider:
 
     def complete(self, system, user, max_tokens=None):
         ids = [s["id"] for s in json.loads(user)["symbols"]]
-        return {"text": json.dumps({"nodes": [{"id": "", "title": "Остальное",
-                                               "symbols": ids}]},
+        return {"text": json.dumps({"nodes": [{"id": "", "title": "Remaining",
+                                                "symbols": ids}]},
                                    ensure_ascii=False),
                 "usage": {"input_tokens": 1, "output_tokens": 1,
                           "cache_read_tokens": 0, "cache_write_tokens": 0,
@@ -50,7 +50,7 @@ class _ManifestProvider:
 def test_manifest_load(tmp_path):
     root = _repo_with_manifest(tmp_path)
     nodes = manifest.load(root)
-    assert nodes == [{"id": "myauth", "title": "Аутентификация",
+    assert nodes == [{"id": "myauth", "title": "Authentication",
                       "own_paths": ["auth/**"]}]
 
 
@@ -60,7 +60,7 @@ def test_manifest_preassign(tmp_path):
     g = extract_repo(root)
     real = [s for s in g["symbols"] if not s.get("synthetic")]
     pinned = manifest.preassign(real, manifest.load(root))
-    # auth/** покрывает auth/login.py и auth/tokens.py; приписка по СТАБИЛЬНОМУ id
+    # auth/** covers auth/login.py and auth/tokens.py; assignment by STABLE id
     assert "auth.login.verify_token" in pinned
     assert pinned["auth.login.verify_token"] == "myauth"
     assert "billing.invoice.Invoice" not in pinned
@@ -76,11 +76,11 @@ def test_group_repo_pinned_keeps_manifest_nodes(tmp_path):
     result = group.group_repo(g["symbols"], g["symbol_edges"], _ManifestProvider(),
                               pinned=pinned,
                               existing_nodes=[{"id": "myauth",
-                                               "title": "Аутентификация"}])
+                                                "title": "Authentication"}])
     names = {n["name"]: set(n["symbols"]) for n in result["nodes"]}
-    # пиннутые символы остались в узле «Аутентификация», свободные — в «Остальное»
-    assert "auth.login.verify_token" in names["Аутентификация"]
-    assert "billing.invoice.Invoice" in names["Остальное"]
+    # pinned symbols stayed in the «Authentication» node, free ones — in «Remaining»
+    assert "auth.login.verify_token" in names["Authentication"]
+    assert "billing.invoice.Invoice" in names["Remaining"]
 
 
 def test_build_graph_manifest_gives_stable_ids(tmp_path, monkeypatch):
@@ -92,18 +92,18 @@ def test_build_graph_manifest_gives_stable_ids(tmp_path, monkeypatch):
 
     graph = emit.build_graph(root, no_llm=False)
     ids = {n["name"]: n["id"] for n in graph["nodes"]}
-    assert ids["Аутентификация"] == "myauth"  # id из манифеста, не n_<slug>
-    assert "Остальное" in ids
+    assert ids["Authentication"] == "myauth"  # id from the manifest, not n_<slug>
+    assert "Remaining" in ids
 
 
 class _DriftProvider(_ManifestProvider):
-    """Возвращает существующий узел с ИЗМЕНЁННЫМ title, но тем же id."""
+    """Returns an existing node with a CHANGED title but the same id."""
 
     def complete(self, system, user, max_tokens=None):
         ids = [s["id"] for s in json.loads(user)["symbols"]]
         return {"text": json.dumps(
             {"nodes": [{"id": "myauth",
-                        "title": "Аутентификация и токены",
+                        "title": "Authentication and tokens",
                         "symbols": ids}]}, ensure_ascii=False),
             "usage": {"input_tokens": 1, "output_tokens": 1,
                       "cache_read_tokens": 0, "cache_write_tokens": 0,
@@ -111,8 +111,8 @@ class _DriftProvider(_ManifestProvider):
 
 
 def test_manifest_identity_is_by_id_not_title(tmp_path):
-    # Дрейф title НЕ должен породить дубль: свободные символы попадают в
-    # существующий узел myauth (по id), title обновляется.
+    # Title drift must NOT create a duplicate: free symbols land in the existing
+    # myauth node (by id), the title is refreshed.
     from mindgraph.extract import extract_repo
     root = _repo_with_manifest(tmp_path)
     g = extract_repo(root)
@@ -122,9 +122,9 @@ def test_manifest_identity_is_by_id_not_title(tmp_path):
     result = group.group_repo(g["symbols"], g["symbol_edges"], _DriftProvider(),
                               pinned=pinned,
                               existing_nodes=[{"id": "myauth",
-                                               "title": "Аутентификация"}])
+                                                "title": "Authentication"}])
     names = {n["name"]: set(n["symbols"]) for n in result["nodes"]}
-    # один узел, не два: свободный символ приписан по id, title уточнился
-    assert "Аутентификация и токены" in names
-    assert "billing.invoice.Invoice" in names["Аутентификация и токены"]
-    assert "Аутентификация" not in names
+    # one node, not two: the free symbol was assigned by id, the title was refined
+    assert "Authentication and tokens" in names
+    assert "billing.invoice.Invoice" in names["Authentication and tokens"]
+    assert "Authentication" not in names

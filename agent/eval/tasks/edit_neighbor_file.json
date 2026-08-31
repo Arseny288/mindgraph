@@ -1,0 +1,7 @@
+{
+  "id": "edit_neighbor_file",
+  "node": "Authentication",
+  "prompt": "Add a docstring to the make_invoice function in billing/invoice.py.",
+  "control": false,
+  "crosses": "billing/invoice.py"
+}

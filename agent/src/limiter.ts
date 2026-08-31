@@ -1,7 +1,8 @@
-// limiter.ts — лимит ходов и остановка при повторяющемся отказе (фаза 2.5, п.4).
+// limiter.ts — move limit and stop-on-repeated-refusal (phase 2.5, item 4).
 //
-// Без этого агент на цикле «пробует один и тот же обход» жжёт токены. Лимит
-// ходов + N подряд отказов одного вида -> agent_end с причиной.
+// Without this the agent burns tokens looping on "try the same workaround
+// again". A move limit + N consecutive refusals of one kind -> agent_end with a
+// reason.
 
 export interface LimiterOptions {
   maxMoves: number;
@@ -24,7 +25,7 @@ export class Limiter {
     this.opts = opts;
   }
 
-  /** Зарегистрировать ход; ``refusalKind`` — тип отказа (или null, если успех). */
+  /** Register a move; ``refusalKind`` — the refusal kind (or null on success). */
   onMove(refusalKind: string | null): boolean {
     this.moves++;
     if (refusalKind) {
@@ -37,7 +38,7 @@ export class Limiter {
       if (this.consecutive >= this.opts.maxConsecutiveRefusals) {
         this.stopped = {
           kind: "repeated_refusal",
-          reason: `повторный отказ «${refusalKind}» ${this.consecutive} раз подряд`,
+          reason: `repeated refusal "${refusalKind}" ${this.consecutive} times in a row`,
         };
         return true;
       }
@@ -46,20 +47,20 @@ export class Limiter {
       this.consecutive = 0;
     }
     if (this.moves >= this.opts.maxMoves) {
-      this.stopped = { kind: "max_moves", reason: `лимит ходов ${this.opts.maxMoves}` };
+      this.stopped = { kind: "max_moves", reason: `move limit ${this.opts.maxMoves}` };
       return true;
     }
     return false;
   }
 }
 
-/** Классифицировать текст отказа инструмента в устойчивый ``kind``. */
+/** Classify a tool's refusal text into a stable ``kind``. */
 export function classifyRefusal(toolName: string, text: string): string | null {
-  if (text.includes("чужой символ")) return "foreign_symbol";
-  if (text.includes("вне allow_read")) return "read_foreign";
-  if (text.includes("вне твоей зоны") || text.includes("вне allow_write")) {
+  if (text.includes("foreign symbol")) return "foreign_symbol";
+  if (text.includes("allow_read")) return "read_foreign";
+  if (text.includes("your zone") || text.includes("allow_write")) {
     return "write_foreign";
   }
-  if (text.includes("НЕРАЗОБРАННОЕ")) return "unassigned_create";
+  if (text.includes("UNASSIGNED")) return "unassigned_create";
   return null;
 }

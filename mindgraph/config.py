@@ -1,14 +1,14 @@
-"""config.py — настройки mindgraph и их разрешение.
+"""config.py — mindgraph settings and their resolution.
 
-Приоритет (поздний побеждает):
+Priority (later wins):
 
-1. дефолты (поля :class:`Config`);
-2. пользовательский ``~/.config/mindgraph/config.toml``;
-3. репо-локальный ``<repo>/mindgraph.toml``;
-4. переменные окружения ``MINDGRAPH_*``;
-5. явные флаги CLI (накладываются в cli.py после :func:`resolve_config`).
+1. defaults (fields of :class:`Config`);
+2. user-level ``~/.config/mindgraph/config.toml``;
+3. repo-local ``<repo>/mindgraph.toml``;
+4. ``MINDGRAPH_*`` environment variables;
+5. explicit CLI flags (applied in cli.py after :func:`resolve_config`).
 
-Формат TOML (см. MINDGRAPH.md):
+TOML format (see MINDGRAPH.md):
 
     [llm]   provider / model / node_min / node_max / no_llm
     [scan]  ignore = [...] / entry_points = [...]
@@ -24,21 +24,21 @@ from pathlib import Path
 
 from .shared import ENTRY_POINT_PATTERNS
 
-# Имя репо-локального конфига и каталог пользовательского.
+# Name of the repo-local config file and the user config directory.
 REPO_CONFIG_NAME = "mindgraph.toml"
 USER_CONFIG_DIR = Path("~/.config/mindgraph").expanduser()
 USER_CONFIG_PATH = USER_CONFIG_DIR / "config.toml"
 
-# Дефолтный каталог кэша LLM-ответов (expanduser применяется потребителем).
+# Default directory for LLM-response cache (expanduser is applied by the consumer).
 DEFAULT_CACHE_DIR = "~/.cache/mindgraph"
 
 
 @dataclass
 class Config:
-    """Настройки инструмента. Поля = ключи TOML-секций, см. docstring модуля."""
+    """Tool settings. Fields = keys of the TOML sections, see module docstring."""
 
     provider: str = "deepseek"
-    model: str | None = None  # None -> дефолтная модель провайдера
+    model: str | None = None  # None -> the provider's default model
     node_min: int = 5
     node_max: int = 15
     no_llm: bool = False
@@ -48,7 +48,7 @@ class Config:
     port: int = 5173
     open_browser: bool = True
 
-    # --- разрешение ------------------------------------------------------
+    # --- resolution ------------------------------------------------------
 
     @classmethod
     def from_dict(cls, d: dict) -> "Config":
@@ -69,16 +69,16 @@ def _repo_config_path(repo_root: str) -> Path | None:
 
 
 def _load_toml(path: Path) -> dict:
-    """Прочитать TOML и сплющить секции ``[llm]``/``[scan]``/``[serve]``/
-    ``[cache]`` в плоский словарь полей Config. Никогда не кидает: битый конфиг —
-    предупреждение в stderr и пустой словарь."""
+    """Read the TOML and flatten the ``[llm]``/``[scan]``/``[serve]``/
+    ``[cache]`` sections into a flat dict of Config fields. Never raises: a
+    broken config is a stderr warning and an empty dict."""
     import sys
     import tomllib
 
     try:
         raw = tomllib.loads(path.read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError) as e:
-        print(f"mindgraph: конфиг {path} не прочитан ({e})", file=sys.stderr)
+        print(f"mindgraph: config {path} could not be read ({e})", file=sys.stderr)
         return {}
 
     flat: dict = {}
@@ -107,7 +107,7 @@ def _load_toml(path: Path) -> dict:
 
 
 def _env_overrides() -> dict:
-    """``MINDGRAPH_*`` переменные окружения → плоский словарь полей."""
+    """``MINDGRAPH_*`` environment variables -> a flat dict of fields."""
     env = os.environ
     out: dict = {}
     if env.get("MINDGRAPH_PROVIDER"):
@@ -132,10 +132,10 @@ def _env_overrides() -> dict:
 
 
 def resolve_config(repo_root: str, explicit_path: str | None = None) -> Config:
-    """Разрешить конфиг: дефолты ← пользовательский ← репо ← env ← (CLI позже).
+    """Resolve the config: defaults <- user <- repo <- env <- (CLI later).
 
-    ``explicit_path`` — ``--config``; если задан, используется ИМЕННО этот файл
-    вместо пользовательского и репо-локального.
+    ``explicit_path`` — ``--config``; when set, EXACTLY this file is used
+    instead of the user-level and repo-local ones.
     """
     flat: dict = {}
 

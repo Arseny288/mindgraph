@@ -1,20 +1,21 @@
-"""verify.py — механическая проверка диффа против границы узла (фаза 1.3, 1.5).
+"""verify.py — mechanical check of a diff against a node's boundary (phases 1.3, 1.5).
 
-Без LLM. Проверяет ДО символов, по кумулятивному диффу от базового коммита
-сессии (не по приросту одного хода — иначе диапазоны строк «едут» после первой
-правки):
+No LLM. Checks down to symbols, over the cumulative diff from the session's base
+commit (not by the increment of a single move — otherwise line ranges "drift"
+after the first edit):
 
-* ``outside_node_zone`` — дифф трогает файл вне ``allow_write`` узла;
-* ``foreign_symbol_in_shared_file`` — изменён символ чужого узла в смешанном
-  файле зоны (изменение тела/сигнатуры либо удаление символа целиком);
-* ``contract_signature_changed`` — изменена сигнатура контрактного (shared)
-  символа, которым владеет сам узел;
-* ``unattributed_change`` — строки файла зоны, не принадлежащие ни одному
-  символу (импорты, код верхнего уровня): НЕ нарушение, но и не тихий ``ok``.
+* ``outside_node_zone`` — the diff touches a file outside the node's ``allow_write``;
+* ``foreign_symbol_in_shared_file`` — a foreign node's symbol in a mixed file of
+  the zone was changed (body/signature change or full deletion of the symbol);
+* ``contract_signature_changed`` — the signature of a contract (shared) symbol
+  owned by the node itself was changed;
+* ``unattributed_change`` — lines of a zone file not belonging to any symbol
+  (imports, top-level code): NOT a violation, but not a silent ``ok`` either.
 
-Атрибуция новой стороны диффа — переизвлечением символов из ИЗМЕНЁННЫХ ФАЙЛОВ
-(``original_dir`` — корень worktree; там уже применён кумулятивный дифф), а не
-по ``symbols[].lines`` из graph.json (они относятся к базовому состоянию).
+Attribution of the diff's new side — by re-extracting symbols from the CHANGED
+FILES (``original_dir`` — the worktree root; the cumulative diff is already
+applied there), not by ``symbols[].lines`` from graph.json (those refer to the
+base state).
 """
 
 from __future__ import annotations
@@ -33,7 +34,7 @@ except ImportError:
 
 
 def _normalize_path(raw: str) -> str | None:
-    """Чистый относительный путь (прямые слэши), либо None, если вне репо."""
+    """A clean relative path (forward slashes), or None if outside the repo."""
     p = raw.strip()
     if p == "/dev/null":
         return None
@@ -61,7 +62,7 @@ def _matches_globs(path: str, globs) -> bool:
 
 
 def _parse_diff(text: str) -> list:
-    """Разбить unified diff на файлы: ``[{path, is_new, is_deleted, hunks}]``."""
+    """Split a unified diff into files: ``[{path, is_new, is_deleted, hunks}]``."""
     files = []
     cur = None
     for line in text.splitlines():
@@ -85,10 +86,10 @@ def _parse_diff(text: str) -> list:
 
 
 def _hunk_line_ranges(hunks: list):
-    """Разобрать хунки на (added_new, removed_base) — номера ИЗМЕНЁННЫХ строк.
+    """Parse hunks into (added_new, removed_base) — numbers of CHANGED lines.
 
-    Только строки ``+`` (в координатах новой стороны) и ``-`` (в координатах
-    базовой стороны); контекстные строки не считаются изменениями.
+    Only ``+`` lines (in the new side's coordinates) and ``-`` lines (in the
+    base side's coordinates); context lines are not considered changes.
     """
     added = []
     removed = []
@@ -108,14 +109,14 @@ def _hunk_line_ranges(hunks: list):
                 base_line += 1
             elif ln.startswith("\\"):
                 pass  # "\ No newline at end of file"
-            else:  # контекст
+            else:  # context
                 base_line += 1
                 new_line += 1
     return added, removed
 
 
 def _extract_file_symbols(path: str, text: str) -> dict:
-    """Переизвлечь РЕАЛЬНЫЕ символы файла: ``{id: {lines, sig}}`` (новая сторона)."""
+    """Re-extract a file's REAL symbols: ``{id: {lines, sig}}`` (the new side)."""
     try:
         tree = ast.parse(text)
     except SyntaxError:
@@ -131,7 +132,7 @@ def _overlaps_lines(lines, points) -> bool:
 
 
 def _collapse_points(points) -> list:
-    """Свернуть отсортированные номера строк в интервалы ``[[a, b], ...]``."""
+    """Collapse sorted line numbers into intervals ``[[a, b], ...]``."""
     if not points:
         return []
     points = sorted(set(points))
@@ -157,9 +158,9 @@ def _read_file(root: str | None, path: str) -> str:
 
 def verify(graph: dict, node: dict, diff_text: str,
            original_dir: str | None = None) -> dict:
-    """Проверить кумулятивный дифф против границы узла.
+    """Check the cumulative diff against the node's boundary.
 
-    ``original_dir`` — корень worktree (уже содержит новую сторону диффа).
+    ``original_dir`` — the worktree root (already contains the new side of the diff).
     """
     bnd = model.boundary(graph, node)
     owners = model.file_owner_map(graph)
@@ -191,7 +192,7 @@ def verify(graph: dict, node: dict, diff_text: str,
         base_in_file = {sid: s for sid, s in base_syms.items()
                         if s["file"] == path}
 
-        # 1. Удалённый символ чужого узла (нет в новой стороне).
+        # 1. A deleted symbol of a foreign node (absent from the new side).
         for sid, base in base_in_file.items():
             if sid not in new_syms and base["node"] != node["name"]:
                 violations.append({
@@ -200,11 +201,11 @@ def verify(graph: dict, node: dict, diff_text: str,
                     "owner": base["node"],
                 })
 
-        # 2. Изменённый символ (сигнатура или тело).
+        # 2. A changed symbol (signature or body).
         for sid, ns in new_syms.items():
             base = base_in_file.get(sid)
             if base is None:
-                continue  # новый символ — код самого узла
+                continue  # new symbol — the node's own code
             sig_changed = model.signature_hash(ns["sig"]) \
                 != model.signature_hash(base["sig"])
             body_touched = _overlaps_lines(ns["lines"], added) \
@@ -222,8 +223,8 @@ def verify(graph: dict, node: dict, diff_text: str,
                     "reason": "contract_signature_changed",
                 })
 
-        # 3. Изменённые строки, не приписанные существующему символу:
-        #    новые символы (нет базового владельца) и код вне символов.
+        # 3. Changed lines not attributed to an existing symbol:
+        #    new symbols (no base owner) and code outside symbols.
         attributed = [ns["lines"] for sid, ns in new_syms.items()
                       if sid in base_in_file]
         uncovered = [p for p in added

@@ -1,4 +1,4 @@
-"""Тесты фазы 1.5, доборы A (unattributed_change) и B (кумулятивный дифф)."""
+"""Phase 1.5 tests, additions A (unattributed_change) and B (cumulative diff)."""
 
 import json
 import os
@@ -46,7 +46,7 @@ def _write(tmp_path, content):
 BASE = "def auth_util():\n    pass\n\ndef bill_util():\n    pass\n"
 
 
-# --- A1: вставка новой функции между символами -> unattributed --------------
+# --- A1: inserting a new function between symbols -> unattributed --------------
 
 def test_insert_new_function_between_symbols_is_unattributed(tmp_path):
     g = _mixed_graph([1, 2], [4, 5])
@@ -63,11 +63,11 @@ def test_insert_new_function_between_symbols_is_unattributed(tmp_path):
             "+def new_fn():\n+    pass\n+\n"
             " def bill_util():\n     pass\n")
     r = verify.verify(g, node, diff, original_dir=str(tmp_path))
-    assert r["ok"] is True  # не нарушение
-    assert r["unattributed_change"]  # но и не тихое ok: новая функция не приписана
+    assert r["ok"] is True  # not a violation
+    assert r["unattributed_change"]  # but not a silent ok: the new function is unattributed
 
 
-# --- A2: правка шапки импортов -> unattributed ------------------------------
+# --- A2: editing the import header -> unattributed ------------------------------
 
 def test_import_header_edit_is_unattributed(tmp_path):
     g = _mixed_graph([3, 4], [6, 7])
@@ -84,10 +84,10 @@ def test_import_header_edit_is_unattributed(tmp_path):
             "+import sys\n")
     r = verify.verify(g, node, diff, original_dir=str(tmp_path))
     assert r["ok"] is True
-    assert r["unattributed_change"]  # импорт — не символ
+    assert r["unattributed_change"]  # an import — not a symbol
 
 
-# --- A3: полное удаление чужого символа -> нарушение ------------------------
+# --- A3: full deletion of a foreign symbol -> violation ------------------------
 
 def test_delete_foreign_symbol_is_violation(tmp_path):
     g = _mixed_graph([1, 2], [4, 5])
@@ -105,14 +105,14 @@ def test_delete_foreign_symbol_is_violation(tmp_path):
                v["symbol"] == "m.shared.bill_util" for v in r["violations"])
 
 
-# --- B: кумулятивный дифф, вторая правка трогает чужой символ ---------------
+# --- B: cumulative diff, a second edit touches a foreign symbol ---------------
 
 def test_two_sequential_edits_second_touches_foreign_symbol(tmp_path):
-    # Базовое состояние; символы bill_util в графе — строки [4,5] (базовые).
+    # Base state; bill_util's symbols in the graph are lines [4,5] (base).
     g = _mixed_graph([1, 2], [4, 5])
     node = model.node_by_ref(g, "auth")
 
-    # Правка 1 сдвигает bill_util вниз; правка 2 меняет его сигнатуру.
+    # Edit 1 shifts bill_util down; edit 2 changes its signature.
     _write(tmp_path,
            "def auth_util():\n    \"\"\"doc\"\"\"\n    pass\n\n"
            "def bill_util(x):\n    return x\n")
@@ -124,7 +124,7 @@ def test_two_sequential_edits_second_touches_foreign_symbol(tmp_path):
             "-def bill_util():\n-    pass\n"
             "+def bill_util(x):\n+    return x\n")
     r = verify.verify(g, node, diff, original_dir=str(tmp_path))
-    # bill_util теперь на строках 5-6, но атрибуция по переизвлечённым символам
-    # ловит чужой символ, несмотря на устаревшие диапазоны в graph.json.
+    # bill_util is now on lines 5-6, but attribution over re-extracted symbols
+    # catches the foreign symbol despite the stale ranges in graph.json.
     assert any(v["reason"] == "foreign_symbol_in_shared_file" and
                v["symbol"] == "m.shared.bill_util" for v in r["violations"])

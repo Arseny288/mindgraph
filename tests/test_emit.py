@@ -1,8 +1,8 @@
-"""Тесты сборки graph.json (emit.py) на фикстуре, всё через --no-llm.
+"""graph.json build tests (emit.py) on the fixture, everything via --no-llm.
 
-Только package-proxy — LLM-путь требует сети/ключа и покрыт test_group.py на
-уровне чистых функций. Здесь проверяем именно контракт §5: вьюеру не должно
-понадобиться ничего досчитывать.
+Only package-proxy — the LLM path requires network/key and is covered by
+test_group.py at the level of pure functions. Here we verify exactly the §5
+contract: the viewer should not need to compute anything itself.
 """
 
 import json
@@ -34,7 +34,7 @@ def test_schema_top_level_keys():
                       "nodes", "node_edges", "domains", "domain_edges",
                       "stats", "warnings"}
     assert g["version"] == 2
-    assert g["grouping"] == "package"  # --no-llm без существующей LLM-разметки
+    assert g["grouping"] == "package"  # --no-llm without existing LLM layout
 
 
 def test_repo_meta():
@@ -43,7 +43,7 @@ def test_repo_meta():
     assert r["name"] == "sample_repo"
     assert r["root"] == os.path.abspath(FIXTURE)
     assert r["repo_hash"].startswith("sha256:")
-    assert r["files"] == 6  # 6 распарсенных .py (broken.py пропущен)
+    assert r["files"] == 6  # 6 parsed .py files (broken.py is skipped)
     assert r["loc"] > 0
     assert r["generated_at"].endswith("Z")
 
@@ -54,7 +54,7 @@ def test_every_symbol_has_node_shared_owners():
         assert "node" in s and s["node"] is not None
         assert "shared" in s and isinstance(s["shared"], bool)
         assert "owners" in s and isinstance(s["owners"], list)
-        # исходные поля extract.py тоже на месте — вьюеру ничего не искать самому
+        # the original extract.py fields are also in place — the viewer finds nothing itself
         assert "sig" in s and "lines" in s and "kind" in s
 
 
@@ -106,8 +106,8 @@ def test_node_edges_aggregate_and_weak_flag():
     for e in g["node_edges"]:
         assert e["weak"] == (e["weight"] == 1)
 
-    # никаких само-рёбер между узлами (contains/uses внутри одного пакета не
-    # должны утечь как node_edge на себя)
+    # no self-edges between nodes (contains/uses within one package must not
+    # leak as a node_edge onto itself)
     assert all(e["from"] != e["to"] for e in g["node_edges"])
 
 
@@ -117,7 +117,7 @@ def test_stats_consistent_with_symbols():
     assert g["stats"]["symbols"] == len(real)
     assert g["stats"]["shared_symbols"] == sum(1 for s in real if s["shared"])
     assert g["stats"]["shared_ratio"] == g["stats"]["shared_symbols"] / g["stats"]["symbols"]
-    assert g["stats"]["unassigned"] == 0  # --no-llm: package-proxy не оставляет неразмеченных
+    assert g["stats"]["unassigned"] == 0  # --no-llm: package-proxy leaves nothing unassigned
     assert g["stats"]["external"] == ["os"]
 
 
@@ -143,13 +143,13 @@ def test_load_or_build_reuses_cache_on_matching_hash():
     g2, from_cache2 = emit.load_or_build(FIXTURE, no_llm=True)
     assert from_cache2 is True
     assert g2["repo"]["repo_hash"] == g1["repo"]["repo_hash"]
-    assert g2["repo"]["generated_at"] == g1["repo"]["generated_at"]  # не пересчитывался
+    assert g2["repo"]["generated_at"] == g1["repo"]["generated_at"]  # was not recomputed
 
 
 def test_load_or_build_force_recomputes():
     _clean()
     g1, _ = emit.load_or_build(FIXTURE, no_llm=True)
-    time.sleep(1.1)  # generated_at — секундная точность
+    time.sleep(1.1)  # generated_at — second-level precision
     g2, from_cache = emit.load_or_build(FIXTURE, no_llm=True, force=True)
     assert from_cache is False
     assert g2["repo"]["generated_at"] != g1["repo"]["generated_at"]
@@ -178,7 +178,7 @@ def test_config_fingerprint_present_and_stable():
 
 
 def test_model_change_invalidates_cache():
-    # 0.3: смена модели/провайдера НЕ должна молча вернуть старый graph.json.
+    # 0.3: a model/provider change must NOT silently return the old graph.json.
     _clean()
     g1, _ = emit.load_or_build(FIXTURE, no_llm=True)
     g2, from_cache = emit.load_or_build(FIXTURE, no_llm=True,
@@ -213,9 +213,35 @@ def test_node_range_change_invalidates_cache():
     assert g2["repo"]["config_fingerprint"] != g1["repo"]["config_fingerprint"]
 
 
+def test_config_fingerprint_embeds_prompt_text():
+    # A prompt change (e.g. a wording/translation update) must invalidate the
+    # cache even when the code/config are otherwise unchanged.
+    f_normal = emit.compute_config_fingerprint("deepseek", None, ["a"], 5, 15, True)
+    orig = emit._system_prompt
+    emit._system_prompt = lambda *a, **k: "CHANGED PROMPT"
+    try:
+        f_changed = emit.compute_config_fingerprint("deepseek", None, ["a"], 5, 15, True)
+    finally:
+        emit._system_prompt = orig
+    assert f_normal != f_changed
+
+
+def test_prompt_change_forces_recalc_of_existing_graph():
+    _clean()
+    g1, _ = emit.load_or_build(FIXTURE, no_llm=True)
+    orig = emit._system_prompt
+    emit._system_prompt = lambda *a, **k: "CHANGED PROMPT"
+    try:
+        g2, from_cache = emit.load_or_build(FIXTURE, no_llm=True)
+    finally:
+        emit._system_prompt = orig
+    assert from_cache is False
+    assert g2["repo"]["config_fingerprint"] != g1["repo"]["config_fingerprint"]
+
+
 def _write_llm_graph():
-    """Записать graph.json с фабричной LLM-разметкой: все символы в один
-    смысловой узел «Все смыслы» (вместо package-proxy)."""
+    """Write a graph.json with a fabricated LLM layout: all symbols into one
+    semantic node «Все смыслы» (instead of package-proxy)."""
     _clean()
     base = emit.build_graph(FIXTURE, no_llm=True)
     base["nodes"] = [{
@@ -236,24 +262,24 @@ def _write_llm_graph():
 
 
 def test_no_llm_preserves_existing_llm_nodes():
-    # §6: --no-llm НЕ должен затирать LLM-разметку — только пересчитать статику.
+    # §6: --no-llm must NOT wipe the LLM layout — only recompute the statics.
     _write_llm_graph()
     g, from_cache = emit.load_or_build(FIXTURE, no_llm=True, force=True)
     assert from_cache is False
     assert g["grouping"] == "llm"
     names = {n["name"] for n in g["nodes"]}
     assert "Все смыслы" in names
-    assert "auth" not in names  # не откатились на package-proxy
+    assert "auth" not in names  # did not fall back to package-proxy
     auth = next(s for s in g["symbols"] if s["id"] == "auth.login.verify_token")
     assert auth["node"] == "Все смыслы"
     all_node = next(n for n in g["nodes"] if n["name"] == "Все смыслы")
     assert all_node["summary"] == "Тестовый смысловой узел."
-    assert all_node["parent"] == "d_all"  # домены тоже сохранены
+    assert all_node["parent"] == "d_all"  # domains are preserved too
 
 
 def test_force_without_regroup_preserves_llm_nodes():
-    # Тот же сценарий, что и баг «--force --no-llm затёр 12 узлов»: --force сам
-    # по себе тоже не платный regroup — LLM-узлы остаются на месте.
+    # The same scenario as the bug "--force --no-llm wiped 12 nodes": --force by
+    # itself is also not a paid regroup — the LLM nodes stay in place.
     _write_llm_graph()
     g, from_cache = emit.load_or_build(FIXTURE, force=True)
     assert from_cache is False
@@ -262,10 +288,10 @@ def test_force_without_regroup_preserves_llm_nodes():
 
 
 def test_regroup_bypasses_cache():
-    # --regroup — явный полный пересчёт, игнорирует актуальный кэш.
+    # --regroup — an explicit full recompute, ignores an up-to-date cache.
     _clean()
     g1, _ = emit.load_or_build(FIXTURE, no_llm=True)
-    time.sleep(1.1)  # generated_at — секундная точность
+    time.sleep(1.1)  # generated_at — second-level precision
     g2, from_cache = emit.load_or_build(FIXTURE, no_llm=True, regroup=True)
     assert from_cache is False
     assert g2["repo"]["generated_at"] != g1["repo"]["generated_at"]

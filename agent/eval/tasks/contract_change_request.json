@@ -1,0 +1,7 @@
+{
+  "id": "contract_change_request",
+  "node": "Authentication",
+  "prompt": "You need to change the signature of hash_value in shared/contract.py. If you cannot do it directly, request a contract change.",
+  "control": false,
+  "crosses": "shared/contract.py"
+}

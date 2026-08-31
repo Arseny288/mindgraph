@@ -58,26 +58,26 @@ function makeSession(worktree = "/wt", fs = new MemFs()): { s: Session; fs: MemF
   return { s, fs };
 }
 
-test("readFile отказывает вне allow_read", async () => {
+test("readFile refuses outside allow_read", async () => {
   const { s } = makeSession();
   await s.openNode("auth");
   await assert.rejects(() => s.readFile("billing/invoice.py"), BoundaryError);
 });
 
-test("readFile читает файл из allow_read", async () => {
+test("readFile reads a file from allow_read", async () => {
   const { s } = makeSession();
   await s.openNode("auth");
   const c = await s.readFile("common/utils.py");
   assert.match(c, /hash_value/);
 });
 
-test("editFile отказывает вне allow_write", async () => {
+test("editFile refuses outside allow_write", async () => {
   const { s } = makeSession();
   await s.openNode("auth");
   await assert.rejects(() => s.editFile("app/models.py", "x"), BoundaryError);
 });
 
-test("editFile отказывает при правке чужого символа в смешанном файле", async () => {
+test("editFile refuses when editing a foreign symbol in a mixed file", async () => {
   const { s } = makeSession();
   await s.openNode("auth");
   await assert.rejects(
@@ -86,7 +86,7 @@ test("editFile отказывает при правке чужого симво�
   );
 });
 
-test("editFile пишет при правке своего символа", async () => {
+test("editFile writes when editing your own symbol", async () => {
   const { s, fs } = makeSession();
   await s.openNode("auth");
   const r = await s.editFile("auth/shared.py", "def own(x):\n    pass\n\ndef bill_util():\n    pass\n");
@@ -94,14 +94,14 @@ test("editFile пишет при правке своего символа", asyn
   assert.match(fs.readFile("/wt/auth/shared.py"), /def own\(x\)/);
 });
 
-test("createFile вне allow_create уходит в «Неразобранное», а не отказ", async () => {
+test("createFile outside allow_create goes to \"Unassigned\", not a refusal", async () => {
   const { s } = makeSession();
   await s.openNode("auth");
   const r = await s.createFile("app/new.py", "x = 1");
   assert.equal(r.unassigned, true);
 });
 
-test("runTests возвращает вердикт узла", async () => {
+test("runTests returns the node verdict", async () => {
   const { s } = makeSession();
   await s.openNode("auth");
   const r = await s.runTests();

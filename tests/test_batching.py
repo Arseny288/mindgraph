@@ -1,8 +1,8 @@
-"""Тесты батчинга группировки (фаза 0.5).
+"""Grouping batching tests (phase 0.5).
 
-Без сети: фейковый провайдер. Проверяем детерминированное разбиение по
-модулям, сам путь «батчи + слияние вторым запросом», и частичный отказ батча
-(символы упавшего батча уходят в «Прочее», остальное продолжает работать).
+No network: a fake provider. We verify deterministic splitting by module, the
+"batches + merge via a second request" path itself, and a partial batch failure
+(the symbols of a failed batch go to «Прочее», the rest keeps working).
 """
 
 import json
@@ -22,7 +22,7 @@ _USAGE = {"input_tokens": 1, "output_tokens": 1, "cache_read_tokens": 0,
 
 
 class _BatchingProvider(LLMProvider):
-    """group: символы -> узлы по файлу (имя 'pkg:<file>'); complete: слияние."""
+    """group: symbols -> nodes by file (name 'pkg:<file>'); complete: merge."""
 
     name = "deepseek"
     model = "test-model"
@@ -54,7 +54,7 @@ class _BatchingProvider(LLMProvider):
             return {"text": json.dumps(
                 {"nodes": [{"name": "Всё", "summary": "", "nodes": refs}]},
                 ensure_ascii=False), "usage": _USAGE}
-        # merge="none": оставить узлы как есть (по одному итоговому узлу на ref)
+        # merge="none": leave the nodes as-is (one final node per ref)
         refs = [n["ref"] for n in json.loads(user)["nodes"]]
         return {"text": json.dumps(
             {"nodes": [{"name": f"m_{r}", "summary": "", "nodes": [r]}
@@ -70,10 +70,10 @@ def test_split_by_module_deterministic_and_within_limit():
     real = [s for s in g["symbols"] if not s.get("synthetic")]
     b1 = _split_by_module(real, 5)
     b2 = _split_by_module(real, 5)
-    assert b1 == b2  # детерминизм
+    assert b1 == b2  # determinism
     assert all(len(b) <= 5 for b in b1)
     assert sum(len(b) for b in b1) == len(real)
-    assert len(b1) > 1  # 13+ реальных символов при лимите 5 дают несколько батчей
+    assert len(b1) > 1  # 13+ real symbols at a limit of 5 yield several batches
 
 
 def test_group_repo_batches_and_merges():
@@ -83,12 +83,12 @@ def test_group_repo_batches_and_merges():
     p = _BatchingProvider(merge="all")
     result = group_repo(g["symbols"], g["symbol_edges"], p, batch_max=5)
 
-    assert p.group_calls > 1       # реально шли батчами
-    assert p.complete_calls == 1   # и был второй запрос слияния
+    assert p.group_calls > 1       # really went in batches
+    assert p.complete_calls == 1   # and there was a second merge request
 
     from mindgraph.group import node_map
     m = node_map(result["nodes"])
-    # каждый реальный символ назначен (слияние "Всё" собрало все батчи)
+    # every real symbol is assigned (the "Всё" merge collected all batches)
     assert set(real_ids) <= set(m)
     for sid in real_ids:
         assert m[sid] == "Всё"
@@ -110,9 +110,9 @@ def test_partial_batch_failure_is_not_fatal():
     g = extract_repo(FIXTURE)
     real_ids = {s["id"] for s in g["symbols"] if not s.get("synthetic")}
 
-    # Падает батч, содержащий cycle.*; вместе с ним в том же батче лежат
-    # common.utils.* — их символы тоже уходят в «Прочее». Остальные
-    # группируются и сливаются в «Всё» как обычно.
+    # The batch containing cycle.* fails; together with it the same batch holds
+    # common.utils.* — their symbols also go to «Прочее». The rest are grouped
+    # and merged into «Всё» as usual.
     p = _BatchingProvider(merge="all", fail_when=lambda sid: sid.startswith("cycle."))
     result = group_repo(g["symbols"], g["symbol_edges"], p, batch_max=5)
 
@@ -127,4 +127,4 @@ def test_partial_batch_failure_is_not_fatal():
         assert m[sid] == UNASSIGNED_NODE
     for sid in ok_ids:
         assert m[sid] == "Всё"
-    assert any("батч" in w for w in result["warnings"])
+    assert any("batch" in w for w in result["warnings"])

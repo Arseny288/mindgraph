@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "mindvibe agent: граф-ориентированный агент с жёсткими границами узлов (фаза 2)",
+  "description": "mindvibe agent: a graph-oriented agent with hard node boundaries (phase 2)",
   "scripts": {
     "test": "node --test test/"
   },

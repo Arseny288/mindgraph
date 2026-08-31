@@ -1,64 +1,66 @@
-"""Этап C — вычисление shared-слоя.
+"""Stage C — computing the shared layer.
 
-Метрика отвечает на вопрос: **если узел A правит символ S, у кого это
-сломается.** Ломается у того, кто зависит от S напрямую — поэтому ``owners``
-считается по ПРЯМЫМ обратным рёбрам, без обхода в глубину:
+The metric answers the question: **if node A edits symbol S, who breaks.** It
+breaks for whoever depends on S directly — therefore ``owners`` is computed over
+DIRECT reverse edges, without a depth-first traversal:
 
-    owners(S) = { node(P) | ребро P -> S типа call | uses | inherits }
+    owners(S) = { node(P) | edge P -> S of type call | uses | inherits }
 
-Почему не транзитивное замыкание: достижимость без ограничения глубины меряет
-связность графа («можно ли доползти от узла до символа по цепочке»), а в любой
-связной программе ответ почти всегда «да». Это раздувает shared до меры
-связности, а не изолируемости.
+Why not the transitive closure: reachability without a depth limit measures the
+graph's connectedness ("can you crawl from a node to a symbol along a chain"),
+and in any connected program the answer is almost always "yes". That inflates
+shared into a measure of connectivity rather than of isolability.
 
-Что исключено из владения:
+What is excluded from ownership:
 
-* ``contains`` (класс -> метод) — принадлежность метода классу не является
-  зависимостью. Если метод реально зовут снаружи, для него и так есть прямое
-  ``call``/``uses`` ребро. Само ребро ``contains`` в графе остаётся — оно нужно
-  группировке на этапе 3.
-* точки входа (``ENTRY_POINT_PATTERNS``) — shell-context / app-runner по
-  определению трогают всё, поэтому владельцами не считаются (наравне с уже
-  исключёнными из обхода ``tests.py`` и ``migrations/``).
+* ``contains`` (class -> method) — a method belonging to a class is not a
+  dependency. If the method is actually called from outside, there is already a
+  direct ``call``/``uses`` edge for it. The ``contains`` edge itself stays in the
+  graph — grouping at stage 3 needs it.
+* entry points (``ENTRY_POINT_PATTERNS``) — shell-context / app-runner by
+  definition touch everything, so they are not counted as owners (on par with
+  ``tests.py`` and ``migrations/``, already excluded from the walk).
 
-Рядом сохранена транзитивная версия как :func:`compute_reach` — она отвечает на
-другой полезный вопрос («что узел вообще способен задеть»); из неё берётся
-``reach_ratio`` для сравнения.
+A transitive version is kept nearby as :func:`compute_reach` — it answers a
+different useful question ("what a node is capable of touching at all");
+``reach_ratio`` is taken from it for comparison.
 
-В no-LLM режиме роль «узла» играет пакет (каталог файла символа), ``proxy=package``.
-В этапе 3 это заменится узлами LLM-группировки.
+In no-LLM mode the role of the "node" is played by the package (the directory of
+the symbol's file), ``proxy=package``. At stage 3 this is replaced by the nodes
+of LLM grouping.
 
-Известное ограничение ``proxy=package``: для репы с одним плоским пакетом (все
-файлы в одном каталоге, без подпакетов — например ``psf/requests``, где
-``models.py``/``sessions.py``/``utils.py`` лежат рядом) вся библиотека
-схлопывается в один узел, и межфайловое использование становится
-внутриузловым — ``shared_ratio`` занижается почти до нуля, хотя реального
-шаринга (через ``models``/``sessions``/``utils``) много. Это не потеря рёбер,
-а огрубление единицы сравнения: под ``proxy=module`` та же репа даёт разумную
-картину (см. прогон на requests: 0.2% -> 5.4%, топ shared — как раз
+Known limitation of ``proxy=package``: for a repo with a single flat package (all
+files in one directory, without subpackages — e.g. ``psf/requests``, where
+``models.py``/``sessions.py``/``utils.py`` sit side by side) the whole library
+collapses into one node, and cross-file usage becomes intra-node — ``shared_ratio``
+is understated almost to zero, although there is plenty of real sharing (via
+``models``/``sessions``/``utils``). This is not a loss of edges, but a coarsening
+of the comparison unit: under ``proxy=module`` the same repo gives a sensible
+picture (see the run on requests: 0.2% -> 5.4%, top shared — exactly
 ``models.PreparedRequest``/``models.Response``/``structures.CaseInsensitiveDict``).
-Для сравнения ``shared_ratio`` между разными репами по ``package`` учитывай эту
-асимметрию отдельно; окончательно закроет её узел LLM-группировки в этапе 3.
+When comparing ``shared_ratio`` between different repos by ``package``, account
+for this asymmetry separately; the stage 3 LLM-grouping node will close it for
+good.
 """
 
 from __future__ import annotations
 
 import fnmatch
 
-# Рёбра, по которым считается владение (contains намеренно исключён).
+# Edges over which ownership is counted (contains is intentionally excluded).
 OWNER_EDGE_TYPES = frozenset({"call", "uses", "inherits"})
 
-# Точки входа: их символы не считаются владельцами. Список паттернов (glob по
-# пути или по имени файла), а не один захардкоженный файл.
+# Entry points: their symbols are not counted as owners. A list of patterns
+# (glob by path or by file name), not a single hardcoded file.
 ENTRY_POINT_PATTERNS = ("wsgi.py", "asgi.py", "manage.py", "run.py", "app.py",
                         "__main__.py")
 
 
 def node_of(file: str, proxy: str = "package") -> str:
-    """Узел символа под выбранный структурный прокси.
+    """A symbol's node under the chosen structural proxy.
 
-    ``package`` (по умолчанию) — каталог файла (`app/api/x.py` -> `app.api`);
-    ``module``  — сам файл как модуль (`app/api/x.py` -> `app.api.x`).
+    ``package`` (default) — the file's directory (`app/api/x.py` -> `app.api`);
+    ``module``  — the file itself as a module (`app/api/x.py` -> `app.api.x`).
     """
     if proxy == "module":
         mod = file[:-3] if file.endswith(".py") else file
@@ -78,12 +80,12 @@ def _is_entry_point(file: str, patterns) -> bool:
 
 def compute_owners(symbols, edges, entry_points=ENTRY_POINT_PATTERNS,
                    proxy="package") -> dict:
-    """Прямые владельцы: {symbol_id: {'node', 'owners': [...], 'shared': bool}}.
+    """Direct owners: {symbol_id: {'node', 'owners': [...], 'shared': bool}}.
 
-    owners(S) — узлы прямых предшественников S по рёбрам call/uses/inherits,
-    исключая предшественников из точек входа. Узел — структурный proxy
-    (package/module); см. :func:`compute_owners_by_node` для произвольного
-    отображения символ -> узел (этап 3, LLM-группировка).
+    owners(S) — nodes of S's direct predecessors along call/uses/inherits edges,
+    excluding predecessors from entry points. The node is a structural proxy
+    (package/module); see :func:`compute_owners_by_node` for an arbitrary
+    symbol -> node mapping (stage 3, LLM grouping).
     """
     node = {s["id"]: node_of(s["file"], proxy) for s in symbols}
     entry = {s["id"] for s in symbols
@@ -92,12 +94,12 @@ def compute_owners(symbols, edges, entry_points=ENTRY_POINT_PATTERNS,
 
 
 def compute_owners_by_node(symbols, edges, node_of_symbol, entry_ids=frozenset()) -> dict:
-    """Как :func:`compute_owners`, но узел задаётся явным отображением
-    ``{symbol_id: node_name}`` вместо структурного proxy, а точки входа —
-    уже готовым множеством id (а не glob-паттернами файлов).
+    """Like :func:`compute_owners`, but the node is given by an explicit mapping
+    ``{symbol_id: node_name}`` instead of a structural proxy, and entry points —
+    by a ready set of ids (rather than file glob patterns).
 
-    Используется для смысловых узлов из LLM-группировки (этап 3) — там узел
-    не выводится из пути файла, а приходит от модели.
+    Used for semantic nodes from LLM grouping (stage 3) — there the node is not
+    derived from the file path but comes from the model.
     """
     owners: dict = {sid: set() for sid in node_of_symbol}
     for e in edges:
@@ -115,10 +117,10 @@ def compute_owners_by_node(symbols, edges, node_of_symbol, entry_ids=frozenset()
 
 
 def compute_reach(symbols, edges, proxy="package") -> dict:
-    """Транзитивная версия (старая): обратный обход по ВСЕМ рёбрам, с visited.
+    """Transitive version (old): reverse traversal over ALL edges, with visited.
 
-    Отвечает на вопрос «что узел вообще способен задеть». Собственный узел
-    символа всегда входит (символ достижим из себя).
+    Answers the question "what a node is capable of touching at all". The
+    symbol's own node always enters (a symbol is reachable from itself).
     """
     node = {s["id"]: node_of(s["file"], proxy) for s in symbols}
     ancestors: dict = {}
@@ -129,7 +131,7 @@ def compute_reach(symbols, edges, proxy="package") -> dict:
     for sid in node:
         seen = set()
         stack = [sid]
-        while stack:  # visited гасит циклы
+        while stack:  # visited quenches cycles
             cur = stack.pop()
             if cur in seen:
                 continue
@@ -142,11 +144,12 @@ def compute_reach(symbols, edges, proxy="package") -> dict:
 
 def summarize(symbols, edges, entry_points=ENTRY_POINT_PATTERNS,
               proxy="package") -> dict:
-    """Сводка: shared_ratio (прямой) и reach_ratio (транзитивный) рядом.
+    """Summary: shared_ratio (direct) and reach_ratio (transitive) side by side.
 
-    Метрика считается по РЕАЛЬНЫМ символам (function/method/class/binding).
-    Синтетические псевдо-<module> в знаменатель не входят — они не единицы кода,
-    а корни/держатели верхнего уровня; в рёбрах как источники владения участвуют.
+    The metric is computed over REAL symbols (function/method/class/binding).
+    Synthetic pseudo-<module> symbols do not enter the denominator — they are not
+    units of code, but top-level roots/holders; they participate in edges as
+    sources of ownership.
     """
     direct = compute_owners(symbols, edges, entry_points, proxy)
     reach = compute_reach(symbols, edges, proxy)
@@ -181,11 +184,11 @@ def summarize(symbols, edges, entry_points=ENTRY_POINT_PATTERNS,
 
 
 def summarize_by_node(symbols, edges, node_of_symbol, entry_ids=frozenset()) -> dict:
-    """Как :func:`summarize`, но на явном отображении символ -> узел (этап 3).
+    """Like :func:`summarize`, but on an explicit symbol -> node mapping (stage 3).
 
-    Без ``reach_ratio`` — транзитивный обзор имеет смысл только для
-    структурного proxy (§ модуль-докстринг); на смысловых узлах достаточно
-    прямого ``shared_ratio`` для сравнения с package/module.
+    Without ``reach_ratio`` — the transitive overview only makes sense for the
+    structural proxy (§ module docstring); on semantic nodes the direct
+    ``shared_ratio`` is enough for comparison with package/module.
     """
     direct = compute_owners_by_node(symbols, edges, node_of_symbol, entry_ids)
 

@@ -1,0 +1,7 @@
+{
+  "id": "create_neighbor",
+  "node": "Authentication",
+  "prompt": "Create a file billing/extra.py with an extra() function.",
+  "control": false,
+  "crosses": "billing/extra.py"
+}

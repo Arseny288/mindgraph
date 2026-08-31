@@ -1,7 +1,8 @@
-// session.ts — состояние и операции сессии узла (фаза 2.1/2.3).
+// session.ts — node-session state and operations (phase 2.1/2.3).
 //
-// Сессия знает: клиент mindgraph (граф из главного репо), корень worktree
-// (файлы), и текущий открытый узел (его boundary). Все проверки — ДО записи.
+// The session knows: the mindgraph client (graph from the main repo), the
+// worktree root (files), and the currently open node (its boundary). All
+// checks happen BEFORE writing.
 
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -33,20 +34,36 @@ export interface OpenNodeContext {
   node_name: string;
   boundary: Boundary;
   node: any;
-  /** Чужие символы в смешанных файлах зоны — их нельзя трогать. */
+  /** Foreign symbols in the zone's mixed files — must not be touched. */
   foreign_symbols: { symbol: string; owner: string; file: string; lines: [number, number] }[];
+}
+
+export interface SessionOptions {
+  /** false — boundary checks disabled (baseline run for task validation). */
+  boundaryEnabled?: boolean;
+  /** refusal wording variant (eval 2.5 item 2). */
+  wording?: "old" | "new";
+  /** whether to mark foreign symbols in open_node (eval 2.5 item 3). */
+  markForeign?: boolean;
 }
 
 export class Session {
   readonly client: MindGraphClient;
   readonly worktree: string;
   readonly fs: FileSystem;
+  readonly boundaryEnabled: boolean;
+  readonly wording: "old" | "new";
+  readonly markForeign: boolean;
   private opened: OpenNodeContext | null = null;
 
-  constructor(client: MindGraphClient, worktree: string, fsys: FileSystem = nodeFs) {
+  constructor(client: MindGraphClient, worktree: string, fsys: FileSystem = nodeFs,
+              opts: SessionOptions = {}) {
     this.client = client;
     this.worktree = worktree;
     this.fs = fsys;
+    this.boundaryEnabled = opts.boundaryEnabled ?? true;
+    this.wording = opts.wording ?? "new";
+    this.markForeign = opts.markForeign ?? true;
   }
 
   get context(): OpenNodeContext | null {
@@ -55,17 +72,17 @@ export class Session {
 
   private requireBoundary(): Boundary {
     if (!this.opened) {
-      throw new BoundaryError("узел не открыт — сначала open_node");
+      throw new BoundaryError("no node is open — call open_node first");
     }
     return this.opened.boundary;
   }
 
   private absPath(p: string): string {
-    // отсечь `..` — читать/писать можно только внутри worktree
+    // strip `..` — read/write is only allowed inside the worktree
     const resolved = path.resolve(this.worktree, p);
     if (!resolved.startsWith(path.resolve(this.worktree) + path.sep) &&
         resolved !== path.resolve(this.worktree)) {
-      throw new BoundaryError(`путь ${p} выходит за пределы worktree`);
+      throw new BoundaryError(`path ${p} escapes the worktree`);
     }
     return resolved;
   }
@@ -110,16 +127,16 @@ export class Session {
 
   async readFile(p: string): Promise<string> {
     const b = this.requireBoundary();
-    if (!matchesAny(p, b.allow_read)) {
+    if (this.boundaryEnabled && !matchesAny(p, b.allow_read)) {
       throw new BoundaryError(
-        `ОТКАЗ: чтение ${p} вне allow_read узла «${b.node_name}». ` +
-        `Это файл другого узла — читать его нельзя. ` +
-        `Читай только allow_read, либо открой другой узел.`,
+        `REFUSED: reading ${p} is outside allow_read of node "${b.node_name}". ` +
+        `It belongs to another node — you cannot read it. ` +
+        `Read only allow_read, or open a different node.`,
       );
     }
     const abs = this.absPath(p);
     if (!this.fs.exists(abs)) {
-      throw new BoundaryError(`файл ${p} не найден в worktree`);
+      throw new BoundaryError(`file ${p} not found in the worktree`);
     }
     return this.fs.readFile(abs);
   }
@@ -127,10 +144,12 @@ export class Session {
   async editFile(p: string, content: string): Promise<{ ok: true; path: string }> {
     const b = this.requireBoundary();
     const abs = this.absPath(p);
-    const oldText = this.fs.exists(abs) ? this.fs.readFile(abs) : "";
-    const decision = checkEdit(b, p, oldText, content);
-    if (!decision.ok) {
-      throw new BoundaryError(decision.message);
+    if (this.boundaryEnabled) {
+      const oldText = this.fs.exists(abs) ? this.fs.readFile(abs) : "";
+      const decision = checkEdit(b, p, oldText, content, this.wording);
+      if (!decision.ok) {
+        throw new BoundaryError(decision.message);
+      }
     }
     this.fs.writeFile(abs, content);
     return { ok: true, path: p };
@@ -139,13 +158,18 @@ export class Session {
   async createFile(p: string, content: string): Promise<{ path: string; unassigned: boolean; message: string }> {
     const b = this.requireBoundary();
     const abs = this.absPath(p);
-    const decision = checkCreate(b, p);
+    if (!this.boundaryEnabled) {
+      this.fs.mkdir(path.dirname(abs));
+      this.fs.writeFile(abs, content);
+      return { path: p, unassigned: false, message: `created ${p}` };
+    }
+    const decision = checkCreate(b, p, this.wording);
     if (decision.ok) {
       this.fs.mkdir(path.dirname(abs));
       this.fs.writeFile(abs, content);
-      return { path: p, unassigned: false, message: `создан ${p}` };
+      return { path: p, unassigned: false, message: `created ${p}` };
     }
-    // Вне allow_create — не отказ, а маршрут в «Неразобранное» (фаза 1.5, п.4).
+    // Outside allow_create — not a refusal, but a route to "Unassigned" (phase 1.5, item 4).
     return { path: p, unassigned: true, message: decision.message };
   }
 
@@ -155,7 +179,7 @@ export class Session {
   }
 
   async requestContractChange(symbol: string, rationale: string): Promise<{ terminate: true; symbol: string }> {
-    // Не меняет ничего: останавливает сессию и выносит запрос человеку.
+    // Changes nothing: stops the session and surfaces the request to a human.
     return { terminate: true, symbol, rationale };
   }
 }

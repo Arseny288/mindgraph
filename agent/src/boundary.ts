@@ -1,8 +1,9 @@
-// boundary.ts — проверка границ зоны узла на TS-стороне (фаза 2.1).
+// boundary.ts — node-zone boundary checks on the TypeScript side (phase 2.1).
 //
-// Инструменты НЕ получают универсальный write: у них есть только
-// allow_read/allow_write/allow_create, и проверка пути идёт ДО записи. Это не
-// забор, это отсутствие двери. Здесь — чистые функции, легко тестируемые.
+// Tools do NOT get a generic `write`: they only have
+// allow_read/allow_write/allow_create, and the path is checked BEFORE writing.
+// This is not a fence, it's the absence of a door. Everything here is pure,
+// easily testable functions.
 
 export interface ForeignRange {
   symbol: string;
@@ -30,7 +31,7 @@ export interface Boundary {
   mixed: MixedFile[];
 }
 
-/** gitignore-стиль совпадение: поддерживает `**` и точный путь. */
+/** gitignore-style matching: supports `**` and exact paths. */
 export function matchesGlob(path: string, glob: string): boolean {
   if (glob === "**") return true;
   if (glob.endsWith("/**")) {
@@ -44,12 +45,12 @@ export function matchesAny(path: string, globs: string[]): boolean {
   return globs.some((g) => matchesGlob(path, g));
 }
 
-/** Диапазон [startLine, endLine] пересекает [a, b]? */
+/** Does range [startLine, endLine] overlap [a, b]? */
 function overlaps(lo: number, hi: number, a: number, b: number): boolean {
   return !(hi < a || lo > b);
 }
 
-/** Диапазон строк, которые правка затрагивает, пересекает чужой символ? */
+/** Does the edited line range overlap a foreign symbol? */
 export function touchesForeignRange(
   mixed: MixedFile | undefined,
   startLine: number,
@@ -64,7 +65,7 @@ export function touchesForeignRange(
   return null;
 }
 
-/** Первый и последний отличающиеся номера строк (1-based) между old/new. */
+/** First and last differing line numbers (1-based) between old/new. */
 export function changedLineRange(
   oldText: string,
   newText: string,
@@ -89,38 +90,37 @@ export class BoundaryError extends Error {
   }
 }
 
-/** Вернуть MixedFile для пути, если он в mixed-списке зоны. */
+/** Return the MixedFile for a path, if it's in the zone's mixed list. */
 export function mixedFileOf(boundary: Boundary, path: string): MixedFile | undefined {
   return boundary.mixed.find((m) => m.file === path);
 }
 
-/** Результат проверки записи. */
+/** Result of a write check. */
 export type WriteDecision =
   | { ok: true }
   | { ok: false; reason: "outside_node_zone"; message: string }
   | { ok: false; reason: "foreign_symbol"; foreign: ForeignRange; message: string };
 
 /**
- * Отказ — часть продукта: это единственный канал, которым агент управляет
- * поведением после стены. Поэтому формулировка несёт (1) чей это символ/файл,
- * (2) узел-хозяин, (3) что делать: остаться в зоне / запросить смену контракта /
- * сменить узел.
+ * The refusal is part of the product: it is the only channel through which the
+ * agent's post-wall behavior is steered. So the wording carries (1) whose
+ * symbol/file it is, (2) the owner node, (3) what to do. Two wording variants
+ * exist for the eval (2.5, item 2).
  */
 export function checkEdit(
   boundary: Boundary,
   path: string,
   oldText: string,
   newText: string,
+  wording: "old" | "new" = "new",
 ): WriteDecision {
   if (!matchesAny(path, boundary.allow_write)) {
-    return {
-      ok: false,
-      reason: "outside_node_zone",
-      message:
-        `ОТКАЗ: ${path} вне твоей зоны узла «${boundary.node_name}». ` +
-        `Это файл другого узла — редактировать его нельзя. ` +
-        `Останься в allow_write, либо открой другой узел (open_node).`,
-    };
+    const message = wording === "old"
+      ? `file ${path} is outside allow_write of node ${boundary.node_name}`
+      : `REFUSED: ${path} is outside your zone (node "${boundary.node_name}"). ` +
+        `It belongs to another node — you cannot edit it. ` +
+        `Stay within allow_write, or open a different node (open_node).`;
+    return { ok: false, reason: "outside_node_zone", message };
   }
   const mixed = mixedFileOf(boundary, path);
   if (mixed) {
@@ -128,17 +128,14 @@ export function checkEdit(
     if (range) {
       const foreign = touchesForeignRange(mixed, range[0], range[1]);
       if (foreign) {
-        return {
-          ok: false,
-          reason: "foreign_symbol",
-          foreign,
-          message:
-            `ОТКАЗ: правка ${path}:${range[0]}-${range[1]} затрагивает чужой символ ` +
-            `${foreign.symbol} (хозяин — узел «${foreign.node}»). ` +
-            `Символ не принадлежит узлу «${boundary.node_name}». ` +
-            `Правь только свои строки; если нужно изменить чужую сигнатуру — ` +
-            `вызови request_contract_change, а не edit_file.`,
-        };
+        const message = wording === "old"
+          ? `editing ${path}:${range[0]}-${range[1]} touches a foreign symbol ${foreign.symbol} (node ${foreign.node})`
+          : `REFUSED: editing ${path}:${range[0]}-${range[1]} touches a foreign symbol ` +
+            `${foreign.symbol} (owner — node "${foreign.node}"). ` +
+            `The symbol does not belong to node "${boundary.node_name}". ` +
+            `Edit only your own lines; to change someone else's signature call ` +
+            `request_contract_change, not edit_file.`;
+        return { ok: false, reason: "foreign_symbol", foreign, message };
       }
     }
   }
@@ -148,16 +145,15 @@ export function checkEdit(
 export function checkCreate(
   boundary: Boundary,
   path: string,
+  wording: "old" | "new" = "new",
 ): WriteDecision {
   if (matchesAny(path, boundary.allow_create)) {
     return { ok: true };
   }
-  return {
-    ok: false,
-    reason: "outside_node_zone",
-    message:
-      `НЕРАЗОБРАННОЕ: создание ${path} вне allow_create узла «${boundary.node_name}». ` +
-      `Это не твоя зона — файл не создан. Создай файл в allow_create, ` +
-      `либо открой узел-хозяин этого каталога.`,
-  };
+  const message = wording === "old"
+    ? `creating ${path} outside allow_create: routed to "Unassigned", not refused`
+    : `UNASSIGNED: creating ${path} is outside allow_create of node "${boundary.node_name}". ` +
+      `This is not your zone — the file was not created. Create it inside ` +
+      `allow_create, or open the node that owns this directory.`;
+  return { ok: false, reason: "outside_node_zone", message };
 }

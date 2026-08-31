@@ -1,13 +1,13 @@
-"""testselect.py — какие тесты прогонять (фаза 1, команда ``tests``).
+"""testselect.py — which tests to run (phase 1, the ``tests`` command).
 
-Эвристика, механическая: тестовым считается файл в каталоге ``tests/``, или
-``test_*.py``/``*_test.py``/``tests.py``. Тест относится к узлу/диффу, если
-какой-то его символ ссылается (рёбрами) на символы узла/изменённых файлов.
+Heuristic, mechanical: a test file is one in a ``tests/`` directory, or
+``test_*.py``/``*_test.py``/``tests.py``. A test relates to a node/diff if one of
+its symbols references (by edges) symbols of the node/changed files.
 
-Фаза 1.5: выбор тестов честно сообщает о своей уверенности. Три вердикта —
-``ok`` / ``failed`` / ``unverified`` (см. model.STATUS_*): пустой или
-низкоуверенный выбор — это ``unverified`` с причиной, а не «зелёный» успех.
-Нерезолвленные импорты снижают ``selection_confidence``.
+Phase 1.5: test selection honestly reports its confidence. Three verdicts —
+``ok`` / ``failed`` / ``unverified`` (see model.STATUS_*): an empty or
+low-confidence selection is ``unverified`` with a reason, not a "green" success.
+Unresolved imports lower ``selection_confidence``.
 """
 
 from __future__ import annotations
@@ -46,8 +46,8 @@ def _wrap(graph: dict, tests: list, query: str) -> dict:
         return {
             "schema_version": "1",
             "status": model.STATUS_UNVERIFIED,
-            "reason": "не удалось выбрать тесты: тестовые файлы не ссылаются "
-                      "на символы запроса",
+            "reason": "could not select tests: no test files reference "
+                      "the symbols of the query",
             "tests": [],
             "selection_confidence": 0.0,
             "unresolved_imports": unresolved,

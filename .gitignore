@@ -25,3 +25,6 @@ Testing_libs/
 
 # --- отладочные скриншоты ---
 screenshot_*.png
+
+# --- результаты eval (генерируются runner'ом) ---
+agent/eval/results/

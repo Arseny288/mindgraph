@@ -1,18 +1,18 @@
-"""model.py — модель владения и контрактов поверх graph.json (фаза 1).
+"""model.py — the ownership and contracts model on top of graph.json (phase 1).
 
-Отвечает на вопросы «что узел может править», «что он читает по контракту»,
-«что ему недоступно». Всё механически, без LLM:
+Answers "what a node may edit", "what it reads by contract", "what is out of
+reach for it". Everything is mechanical, without an LLM:
 
-* символ -> узел: поле ``symbols[].node`` (уже посчитано в graph.json);
-* файл -> узел-хозяин: большинство РЕАЛЬНЫХ символов файла (tie-break —
-  лексикографически по имени узла); файл без реальных символов наследует узел
-  своего псевдо-``<module>``;
-* контракт: символ ``shared == true`` (его используют более чем из одного
-  узла); его сигнатура фиксируется хэшем ``sha256(sig)`` и не может меняться
-  без явного согласования.
+* symbol -> node: the ``symbols[].node`` field (already computed in graph.json);
+* file -> owning node: the majority of the file's REAL symbols (tie-break —
+  lexicographically by node name); a file without real symbols inherits the node
+  of its pseudo-``<module>``;
+* contract: a symbol with ``shared == true`` (used from more than one node); its
+  signature is pinned by the hash ``sha256(sig)`` and cannot change without
+  explicit agreement.
 
-Всё это — read-only анализ уже собранного ``graph.json``; ничего не
-досчитывает из исходников и не ходит в LLM.
+All of this is read-only analysis of the already-built ``graph.json``; nothing
+is recomputed from sources and no LLM is called.
 """
 
 from __future__ import annotations
@@ -23,40 +23,40 @@ import os
 
 
 def load_graph(root: str) -> dict:
-    """Прочитать ``<root>/.mindgraph/graph.json`` (контракт emit.py)."""
+    """Read ``<root>/.mindgraph/graph.json`` (the emit.py contract)."""
     path = os.path.join(os.path.abspath(root), ".mindgraph", "graph.json")
     with open(path, encoding="utf-8") as fh:
         return json.load(fh)
 
 
-# Три состояния вердикта (фаза 1.5): на них опираются фаза 2 и вьюер.
+# Three verdict states (phase 1.5): phase 2 and the viewer rely on them.
 STATUS_OK = "ok"
 STATUS_FAILED = "failed"
 STATUS_UNVERIFIED = "unverified"
 
 
 def unresolved_imports(graph: dict) -> list:
-    """Нерезолвленные импорты — внешние пакеты, которые экстрактор не смог
-    свести к внутрирепозиторным символам (неполнота графа)."""
+    """Unresolved imports — external packages the extractor could not reduce to
+    in-repo symbols (graph incompleteness)."""
     return list(graph.get("stats", {}).get("external", []))
 
 
 def graph_incomplete(graph: dict) -> bool:
-    """Граф неполон: есть нерезолвленные импорты -> impact/verify занижают."""
+    """The graph is incomplete: there are unresolved imports -> impact/verify understate."""
     return bool(unresolved_imports(graph))
 
 
 def signature_hash(sig: str | None) -> str:
-    """Фиксированный хэш сигнатуры контракта."""
+    """Pinned hash of a contract's signature."""
     return "sha256:" + hashlib.sha256((sig or "").encode("utf-8")).hexdigest()[:16]
 
 
 def node_by_ref(graph: dict, ref: str) -> dict:
-    """Найти узел L1 по id или по имени (принимает и то, и то)."""
+    """Find an L1 node by id or by name (accepts both)."""
     for n in graph["nodes"]:
         if n["id"] == ref or n["name"] == ref:
             return n
-    raise KeyError(f"узел {ref!r} не найден в graph.json")
+    raise KeyError(f"node {ref!r} not found in graph.json")
 
 
 def _symbol_by_id(graph: dict) -> dict:
@@ -64,7 +64,7 @@ def _symbol_by_id(graph: dict) -> dict:
 
 
 def file_owner_map(graph: dict) -> dict:
-    """``{file: node_name}`` — узел-хозяин каждого файла (большинство символов)."""
+    """``{file: node_name}`` — the owning node of each file (majority of symbols)."""
     counts: dict = {}
     for s in graph["symbols"]:
         if s.get("synthetic"):
@@ -74,10 +74,10 @@ def file_owner_map(graph: dict) -> dict:
 
     owners: dict = {}
     for f, c in counts.items():
-        # max по числу символов; на равенстве — лексикографически первый узел.
+        # max by symbol count; on a tie — the lexicographically first node.
         owners[f] = max(sorted(c), key=lambda n: c[n])
 
-    # Файлы без реальных символов: наследуют узел своего <module>.
+    # Files without real symbols: inherit the node of their <module>.
     for s in graph["symbols"]:
         if s.get("synthetic") and s["file"] not in owners:
             owners[s["file"]] = s["node"]
@@ -85,7 +85,7 @@ def file_owner_map(graph: dict) -> dict:
 
 
 def file_symbol_nodes(graph: dict) -> dict:
-    """``{file: {node_name: [symbol_ids]}}`` для РЕАЛЬНЫХ символов."""
+    """``{file: {node_name: [symbol_ids]}}`` for REAL symbols."""
     by_file: dict = {}
     for s in graph["symbols"]:
         if s.get("synthetic"):
@@ -95,11 +95,12 @@ def file_symbol_nodes(graph: dict) -> dict:
 
 
 def mixed_files(graph: dict) -> dict:
-    """``{file: {owner, nodes, foreign}}`` — файлы с символами >1 узла.
+    """``{file: {owner, nodes, foreign}}`` — files with symbols of >1 node.
 
-    ``foreign`` — символы (по узлам), принадлежащие НЕ хозяину файла. Это дыра
-    в границе: владелец смешанного файла может править чужой символ, а
-    проверка по путям этого не видит — поэтому verify разбирает дифф до символов.
+    ``foreign`` — symbols (by node) belonging NOT to the file's owner. This is a
+    hole in the boundary: the owner of a mixed file can edit someone else's
+    symbol, and a path-based check does not see it — so verify breaks the diff
+    down to symbols.
     """
     owners = file_owner_map(graph)
     fn = file_symbol_nodes(graph)
@@ -117,10 +118,10 @@ def mixed_files(graph: dict) -> dict:
 
 
 def foreign_symbol_ranges(graph: dict, file: str) -> list:
-    """Чужие символы смешанного файла с диапазонами строк.
+    """Foreign symbols of a mixed file with their line ranges.
 
-    Нужно агенту (фаза 2.1): ``edit_file`` проверяет затронутые диапазоны ДО
-    записи и отказывает, если они принадлежат чужому символу.
+    Needed by the agent (phase 2.1): ``edit_file`` checks the touched ranges
+    BEFORE writing and refuses if they belong to a foreign symbol.
     """
     m = mixed_files(graph).get(file)
     if m is None:
@@ -136,7 +137,7 @@ def foreign_symbol_ranges(graph: dict, file: str) -> list:
 
 
 def mixed_file_stats(graph: dict) -> dict:
-    """Метрика смешанности файлов для отчёта (фаза 1.5)."""
+    """File-mixedness metric for the report (phase 1.5)."""
     fn = file_symbol_nodes(graph)
     mixed = mixed_files(graph)
     total_files = len(fn)
@@ -154,7 +155,7 @@ def mixed_file_stats(graph: dict) -> dict:
 
 
 def contract_symbols(graph: dict) -> list:
-    """Все контрактные (shared) символы с фиксированной сигнатурой."""
+    """All contract (shared) symbols with a pinned signature."""
     return [{"symbol": s["id"], "node": s["node"],
              "signature_hash": signature_hash(s["sig"])}
             for s in graph["symbols"]
@@ -162,10 +163,10 @@ def contract_symbols(graph: dict) -> list:
 
 
 def node_contracts(graph: dict, node: dict) -> list:
-    """Контракты, которые узел ИСПОЛЬЗУЕТ (зависит), но не владеет.
+    """Contracts that the node USES (depends on) but does not own.
 
-    Ребро ``from`` принадлежит символу узла, ``to`` — shared-символу другого
-    узла. Читать можно, менять сигнатуру нельзя.
+    The ``from`` edge belongs to a symbol of the node, ``to`` — to a shared
+    symbol of another node. Reading is allowed, changing the signature is not.
     """
     sym_by_id = _symbol_by_id(graph)
     owned = {s["id"] for s in graph["symbols"]
@@ -185,7 +186,7 @@ def node_contracts(graph: dict, node: dict) -> list:
 
 
 def node_view(graph: dict, node: dict) -> dict:
-    """Всё, что нужно команде ``node``: owned / contracts / foreign / mixed."""
+    """Everything the ``node`` command needs: owned / contracts / foreign / mixed."""
     owners = file_owner_map(graph)
     owned_files = sorted(f for f, owner in owners.items()
                          if owner == node["name"])
@@ -218,9 +219,9 @@ def node_view(graph: dict, node: dict) -> dict:
 
 
 def allow_write_globs(graph: dict, node: dict) -> list:
-    """Разрешения на запись: glob каталога, если каталог ЦЕЛИКОМ принадлежит
-    узлу, иначе — точные пути файлов (каталог общий, «dir/**» перехватил бы
-    чужие файлы). Плюс зеркальные каталоги тестов."""
+    """Write permissions: a directory glob if the directory WHOLLY belongs to the
+    node, otherwise exact file paths (the directory is shared, ``dir/**`` would
+    intercept foreign files). Plus mirrored test directories."""
     owners = file_owner_map(graph)
     all_files = {s["file"] for s in graph["symbols"]}
     owned = sorted(f for f, owner in owners.items() if owner == node["name"])
@@ -238,9 +239,9 @@ def allow_write_globs(graph: dict, node: dict) -> list:
         if set(fs) == dir_of.get(d, set()):
             entries.add((d + "/**") if d else "**")
         else:
-            entries.update(fs)  # каталог делят несколько узлов — точечно
+            entries.update(fs)  # the directory is split among several nodes — pointwise
 
-    # Зеркальные тесты: каталогу `X/sub` соответствует `tests/sub/**`.
+    # Mirrored tests: directory `X/sub` corresponds to `tests/sub/**`.
     extra = set()
     for f in owned:
         parts = f.split("/")
@@ -254,8 +255,8 @@ def allow_write_globs(graph: dict, node: dict) -> list:
 
 
 def allow_create_globs(graph: dict, node: dict) -> list:
-    """Глобы каталогов, ЦЕЛИКОМ принадлежащих узлу — в них можно создавать
-    новые файлы (allow_write даёт точные пути и не покрывает создание)."""
+    """Globs of directories WHOLLY owned by the node — new files can be created
+    there (allow_write gives exact paths and does not cover creation)."""
     owners = file_owner_map(graph)
     all_files = {s["file"] for s in graph["symbols"]}
     owned = {f for f, o in owners.items() if o == node["name"]}
@@ -276,12 +277,12 @@ def allow_create_globs(graph: dict, node: dict) -> list:
 
 
 def boundary(graph: dict, node: dict) -> dict:
-    """Границы зоны узла: allow_write / allow_create / deny_write / allow_read.
+    """The node's zone boundaries: allow_write / allow_create / deny_write / allow_read.
 
-    Порядок разрешения — deny по умолчанию (``**``), allow точечно.
-    ``allow_read`` = зона записи + ТОЧНЫЕ пути файлов контрактных символов.
-    ``mixed`` — смешанные файлы зоны (чужие символы нельзя править, даже если
-    путь в allow_write).
+    Resolution order — deny by default (``**``), allow pointwise.
+    ``allow_read`` = the write zone + EXACT paths of the files of contract symbols.
+    ``mixed`` — the mixed files of the zone (foreign symbols cannot be edited,
+    even if the path is in allow_write).
     """
     contracts = node_contracts(graph, node)
     sym_by_id = _symbol_by_id(graph)

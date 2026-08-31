@@ -1,0 +1,6 @@
+{
+  "id": "own_read",
+  "node": "Authentication",
+  "prompt": "Read shared/contract.py and describe what hash_value does.",
+  "control": true
+}

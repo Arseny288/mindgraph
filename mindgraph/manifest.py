@@ -1,21 +1,21 @@
-"""manifest.py — манифест стабильных узлов ``.mindvibe/nodes.yaml`` (фаза 1.5).
+"""manifest.py — the manifest of stable nodes ``.mindvibe/nodes.yaml`` (phase 1.5).
 
-Манифест — это git-версионируемый «костяк» смысловых узлов. Он фиксирует
-идентичность узла (id, title, пути владения), чтобы LLM при пересчёте НЕ
-переименовывал и не переразбивал существующие узлы: символы, попавшие под
-``own_paths`` узла, приписываются к нему механически, а модель классифицирует
-только символы, не приписанные ни к одному узлу.
+The manifest is a git-versioned "skeleton" of semantic nodes. It pins the
+identity of a node (id, title, ownership paths) so that the LLM on recomputation
+does NOT rename or re-split existing nodes: symbols falling under a node's
+``own_paths`` are assigned to it mechanically, and the model classifies only the
+symbols not assigned to any node.
 
-Формат:
+Format:
 
 .. code-block:: yaml
 
     nodes:
       - id: auth
-        title: Аутентификация
+        title: Authentication
         own_paths: ["app/auth/**", "app/tokens.py"]
 
-``own_paths`` — gitignore-глобы по пути файла относительно корня репы.
+``own_paths`` — gitignore globs by file path relative to the repo root.
 """
 
 from __future__ import annotations
@@ -33,13 +33,13 @@ MANIFEST_REL = os.path.join(".mindvibe", "nodes.yaml")
 
 
 def mindvibe_root(root: str) -> str:
-    """Корень ГЛАВНОГО репозитория, где лежит ``.mindvibe/`` (не worktree).
+    """The root of the MAIN repository holding ``.mindvibe/`` (not the worktree).
 
-    Сессии идут в ``git worktree``: у worktree ``.git`` — это ФАЙЛ
-    ``gitdir: <main>/.git/worktrees/<name>``. Если резолвить ``.mindvibe`` от
-    рабочей директории, каждая сессия стартует с пустым манифестом и памятью.
-    Поэтому поднимаемся к главному репо по этому указателю, если ``.mindvibe``
-    в текущем корне отсутствует.
+    Sessions run in a ``git worktree``: a worktree's ``.git`` is a FILE
+    ``gitdir: <main>/.git/worktrees/<name>``. If we resolved ``.mindvibe`` from
+    the working directory, every session would start with an empty manifest and
+    memory. So we climb to the main repo by this pointer when ``.mindvibe`` is
+    absent from the current root.
     """
     root = os.path.abspath(root)
 
@@ -55,7 +55,7 @@ def mindvibe_root(root: str) -> str:
             content = open(gitfile, encoding="utf-8").read()
             if content.startswith("gitdir:"):
                 gitdir = content.split(":", 1)[1].strip()
-                # <main>/.git/worktrees/<name> -> <main> (три уровня вверх)
+                # <main>/.git/worktrees/<name> -> <main> (three levels up)
                 main_root = os.path.abspath(os.path.join(
                     gitdir, os.pardir, os.pardir, os.pardir))
                 if _has(main_root):
@@ -74,10 +74,10 @@ def notes_dir(root: str) -> str:
 
 
 def read_note(root: str, node_id: str) -> str | None:
-    """Память узла ``.mindvibe/notes/<node_id>.md``; нет файла -> None.
+    """Node memory ``.mindvibe/notes/<node_id>.md``; no file -> None.
 
-    Грузится ТОЛЬКО при открытом узле (агент вызывает при ``open_node``).
-    Проектного файла уровня не существует.
+    Loaded ONLY when the node is open (the agent calls it at ``open_node``).
+    There is no project-level file.
     """
     path = os.path.join(notes_dir(root), f"{node_id}.md")
     try:
@@ -96,7 +96,7 @@ def write_note(root: str, node_id: str, content: str) -> str:
 
 
 def load(root: str) -> list:
-    """Прочитать манифест; битый/отсутствующий -> пустой список (не фатально)."""
+    """Read the manifest; broken/missing -> an empty list (not fatal)."""
     p = manifest_path(root)
     if not os.path.exists(p):
         return []
@@ -124,7 +124,7 @@ def _spec(own_paths: list):
 
 
 def match_any(manifest_nodes: list, file: str) -> dict | None:
-    """Первый узел манифеста, чей ``own_paths`` покрывает файл (или None)."""
+    """The first manifest node whose ``own_paths`` covers the file (or None)."""
     for n in manifest_nodes:
         spec = _spec(n["own_paths"])
         if spec is not None and spec.match_file(file):
@@ -133,10 +133,10 @@ def match_any(manifest_nodes: list, file: str) -> dict | None:
 
 
 def preassign(real_symbols: list, manifest_nodes: list) -> dict:
-    """``{symbol_id: node_id}`` для символов, покрытых манифестом.
+    """``{symbol_id: node_id}`` for symbols covered by the manifest.
 
-    Символ приписывается узлу по ФАЙЛУ (own_paths) и по СТАБИЛЬНОМУ id; модель
-    его не увидит.
+    A symbol is assigned to a node by FILE (own_paths) and by STABLE id; the model
+    will not see it.
     """
     pinned: dict = {}
     by_file: dict = {}

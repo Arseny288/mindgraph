@@ -1,8 +1,8 @@
-"""impact.py — транзитивное множество «что заденет правка символа/файла».
+"""impact.py — the transitive set of "what an edit to a symbol/file touches".
 
-Прямой обход по ``symbol_edges`` (from -> to): от символа (или всех символов
-файла) идём по вызовам/упоминаниям/наследованию вперёд и собираем всё
-достижимое. ``depth`` ограничивает число рёбер (None — без ограничения).
+Forward traversal over ``symbol_edges`` (from -> to): starting from a symbol (or
+all symbols of a file) we walk calls/mentions/inheritance forward and collect
+everything reachable. ``depth`` limits the number of edges (None — unlimited).
 """
 
 from __future__ import annotations
@@ -11,17 +11,17 @@ from . import model
 
 
 def _start_symbols(graph: dict, query: str) -> set:
-    """Начальное множество: символ по id, либо все символы файла."""
+    """Starting set: a symbol by id, or all symbols of a file."""
     if query in {s["id"] for s in graph["symbols"]}:
         return {query}
     return {s["id"] for s in graph["symbols"] if s["file"] == query}
 
 
 def impact(graph: dict, query: str, depth: int | None = None) -> dict:
-    """Возвращает затронутые символы и файлы + неполноту (нерезолвленные импорты).
+    """Returns affected symbols and files + incompleteness (unresolved imports).
 
-    ``complete=False`` означает: в графе есть нерезолвленные импорты, часть
-    затронутого могла быть упущена (impact занижен).
+    ``complete=False`` means: the graph has unresolved imports, part of the
+    affected set may have been missed (impact is understated).
     """
     start = _start_symbols(graph, query)
     if not start:

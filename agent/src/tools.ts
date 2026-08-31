@@ -1,7 +1,8 @@
-// tools.ts — инструменты агента (фаза 2.3).
+// tools.ts — the agent's tools (phase 2.3).
 //
-// Универсальных read/write/edit/bash НЕТ. Есть только узкий набор инструментов,
-// у которых записи вне зоны нет как операции (отсутствие двери, а не забор).
+// There are NO generic read/write/edit/bash tools. Only a narrow tool set,
+// where writing outside the zone does not exist as an operation (the absence of
+// a door, not a fence).
 
 import { Type } from "@earendil-works/pi-ai";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
@@ -15,8 +16,8 @@ export function buildTools(session: Session): AgentTool[] {
   return [
     {
       name: "list_nodes",
-      label: "Список узлов",
-      description: "Узлы графа с краткими описаниями (id, name, summary).",
+      label: "List nodes",
+      description: "The graph's nodes with brief descriptions (id, name, summary).",
       parameters: Type.Object({}),
       async execute() {
         const r = await session.listNodes();
@@ -25,32 +26,33 @@ export function buildTools(session: Session): AgentTool[] {
     },
     {
       name: "open_node",
-      label: "Открыть узел",
+      label: "Open node",
       description:
-        "Контекст узла: зона, контракты, смешанные файлы. Это заменяет «прочитать весь репозиторий».",
-      parameters: Type.Object({ id: Type.String({ description: "id или имя узла" }) }),
+        "Node context: zone, contracts, mixed files. This replaces \"read the whole repository\".",
+      parameters: Type.Object({ id: Type.String({ description: "node id or name" }) }),
       async execute(_id, params) {
         const ctx = await session.openNode(params.id);
         const b = ctx.boundary;
-        const foreign = ctx.foreign_symbols.map((f) =>
-          `  - ${f.symbol} (хозяин: узел «${f.owner}», ${f.file}:${f.lines[0]}-${f.lines[1]})`,
-        );
-        const view = {
+        const view: Record<string, unknown> = {
           node_id: ctx.node_id,
           node_name: ctx.node_name,
           allow_write: b.allow_write,
           allow_create: b.allow_create,
           allow_read: b.allow_read,
           contracts: b.contracts,
-          "ЧУЖИЕ_СИМВОЛЫ_В_ЗОНЕ_НЕ_ТРОГАТЬ": foreign,
         };
+        if (session.markForeign) {
+          view["FOREIGN_SYMBOLS_IN_ZONE_DO_NOT_TOUCH"] = ctx.foreign_symbols.map((f) =>
+            `${f.symbol} (owner: node "${f.owner}", ${f.file}:${f.lines[0]}-${f.lines[1]})`,
+          );
+        }
         return text(JSON.stringify(view, null, 2));
       },
     },
     {
       name: "read_file",
-      label: "Читать файл",
-      description: "Прочитать файл. Отказ, если путь вне allow_read узла.",
+      label: "Read file",
+      description: "Read a file. Refused if the path is outside the node's allow_read.",
       parameters: Type.Object({ path: Type.String() }),
       async execute(_id, params) {
         const c = await session.readFile(params.path);
@@ -59,12 +61,12 @@ export function buildTools(session: Session): AgentTool[] {
     },
     {
       name: "edit_file",
-      label: "Правка файла",
+      label: "Edit file",
       description:
-        "Заменить содержимое файла. Отказ, если путь вне allow_write или правка затрагивает чужой символ в смешанном файле (проверка ДО записи).",
+        "Replace a file's contents. Refused if the path is outside allow_write or the edit touches a foreign symbol in a mixed file (checked BEFORE writing).",
       parameters: Type.Object({
         path: Type.String(),
-        content: Type.String({ description: "новое полное содержимое файла" }),
+        content: Type.String({ description: "new full file contents" }),
       }),
       async execute(_id, params) {
         const r = await session.editFile(params.path, params.content);
@@ -73,9 +75,9 @@ export function buildTools(session: Session): AgentTool[] {
     },
     {
       name: "create_file",
-      label: "Создать файл",
+      label: "Create file",
       description:
-        "Создать файл в allow_create. Вне allow_create — не отказ, а маршрут в «Неразобранное».",
+        "Create a file inside allow_create. Outside allow_create — not a refusal, but a route to \"Unassigned\".",
       parameters: Type.Object({
         path: Type.String(),
         content: Type.String(),
@@ -87,9 +89,9 @@ export function buildTools(session: Session): AgentTool[] {
     },
     {
       name: "run_tests",
-      label: "Прогнать тесты",
+      label: "Run tests",
       description:
-        "Прогнать тесты зоны. Состав определяет mindgraph (tests --for-node), агент не выбирает и произвольной оболочки не получает.",
+        "Run the zone's tests. The set is decided by mindgraph (tests --for-node); the agent does not choose and has no arbitrary shell.",
       parameters: Type.Object({}),
       async execute() {
         const r = await session.runTests();
@@ -98,9 +100,9 @@ export function buildTools(session: Session): AgentTool[] {
     },
     {
       name: "request_contract_change",
-      label: "Запрос изменения контракта",
+      label: "Request contract change",
       description:
-        "Запросить у человека изменение сигнатуры контракта. Ничего не меняет — останавливает сессию и выносит запрос.",
+        "Ask a human to change a contract's signature. Changes nothing — stops the session and surfaces the request.",
       parameters: Type.Object({
         symbol: Type.String(),
         rationale: Type.String(),

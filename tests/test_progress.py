@@ -1,7 +1,7 @@
-"""Тесты прогресса/--verbose (фаза 0.6).
+"""Progress/--verbose tests (phase 0.6).
 
-Лог этапов идёт ТОЛЬКО в stderr; stdout остаётся чистым (важно для JSON-контракта
-фазы 1). Батчинг логирует «батч i/N».
+Stage logging goes ONLY to stderr; stdout stays clean (important for the phase 1
+JSON contract). Batching logs "batch i/N".
 """
 
 import json
@@ -25,7 +25,7 @@ class _FakeProvider(LLMProvider):
 
     def group(self, symbols, edges, node_count=None, node_min=5, node_max=15):
         ids = [s["id"] for s in symbols]
-        return {"text": json.dumps({"nodes": [{"name": "Всё", "summary": "",
+        return {"text": json.dumps({"nodes": [{"name": "All", "summary": "",
                                                "symbols": ids}]}),
                 "usage": {"input_tokens": 1, "output_tokens": 1,
                           "cache_read_tokens": 0, "cache_write_tokens": 0,
@@ -42,8 +42,8 @@ def test_batch_progress_logged(caplog):
     with caplog.at_level(logging.INFO, logger="mindgraph.group"):
         group_repo(g["symbols"], g["symbol_edges"], _FakeProvider(),
                    batch_max=5)
-    assert any("батч" in r.message for r in caplog.records)
-    assert any("/" in r.message and "символов" in r.message
+    assert any("batch" in r.message for r in caplog.records)
+    assert any("/" in r.message and "symbols" in r.message
                for r in caplog.records)
 
 
@@ -53,5 +53,5 @@ def test_cli_verbose_logs_to_stderr_and_stdout_stays_clean():
          "--no-llm", "--force", "--verbose"],
         capture_output=True, text=True)
     assert proc.returncode == 0
-    assert "этап A" in proc.stderr
+    assert "stage A" in proc.stderr
     assert proc.stdout == ""

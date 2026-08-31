@@ -1,4 +1,4 @@
-"""Тесты разрешения конфига (config.py): дефолты, env, TOML, приоритеты."""
+"""Config resolution tests (config.py): defaults, env, TOML, priorities."""
 
 import os
 import shutil
@@ -88,7 +88,7 @@ def test_broken_toml_does_not_crash():
     with open(os.path.join(root, "mindgraph.toml"), "w", encoding="utf-8") as fh:
         fh.write("это не toml = [")
     try:
-        c = resolve_config(root)  # не падает, возвращает дефолты
+        c = resolve_config(root)  # does not crash, returns defaults
         assert c.provider == "deepseek"
     finally:
         shutil.rmtree(root)

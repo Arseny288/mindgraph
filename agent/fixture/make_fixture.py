@@ -1,16 +1,16 @@
-# make_fixture.py — детерминированная фикстура для живых прогонов отказа.
+# make_fixture.py — deterministic fixture for live boundary-refusal runs.
 #
-# Строит маленький репозиторий с намеренно СМЕШАННЫМ файлом (shared/mixed.py:
-# auth_part -> узел «Аутентификация», billing_part -> узел «Биллинг») и
-# КОНТРАКТОМ (shared/contract.py::hash_value, shared, используется обоими).
-# Запускается так: python make_fixture.py <root>  (пишет .mindgraph/graph.json).
+# Builds a small repo with a deliberately MIXED file (shared/mixed.py:
+# auth_part -> node "Authentication", billing_part -> node "Billing") and a
+# CONTRACT (shared/contract.py::hash_value, shared, used by both).
+# Run it as: python make_fixture.py <root>  (writes .mindgraph/graph.json).
 #
-# Логика: extract_repo даёт символы/рёбра с ТОЧНЫМИ строками; назначение узлов
-# задаём вручную; owners/shared считаем через compute_owners_by_node.
+# Logic: extract_repo yields symbols/edges with EXACT line numbers; node
+# assignment is set manually; owners/shared are computed via
+# compute_owners_by_node.
 
 import json
 import os
-import shutil
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -44,20 +44,20 @@ FILES = {
 }
 
 NODE_OF = {
-    "auth.login.<module>": "Аутентификация",
-    "auth.login.login": "Аутентификация",
-    "shared.mixed.<module>": "Аутентификация",
-    "shared.mixed.auth_part": "Аутентификация",
-    "shared.contract.<module>": "Аутентификация",
-    "shared.contract.hash_value": "Аутентификация",
-    "billing.invoice.<module>": "Биллинг",
-    "billing.invoice.make_invoice": "Биллинг",
-    "shared.mixed.billing_part": "Биллинг",
+    "auth.login.<module>": "Authentication",
+    "auth.login.login": "Authentication",
+    "shared.mixed.<module>": "Authentication",
+    "shared.mixed.auth_part": "Authentication",
+    "shared.contract.<module>": "Authentication",
+    "shared.contract.hash_value": "Authentication",
+    "billing.invoice.<module>": "Billing",
+    "billing.invoice.make_invoice": "Billing",
+    "shared.mixed.billing_part": "Billing",
 }
 
 SUMMARIES = {
-    "Аутентификация": "Вход и токены.",
-    "Биллинг": "Счета и суммы.",
+    "Authentication": "Login and tokens.",
+    "Billing": "Invoices and amounts.",
 }
 
 
@@ -78,7 +78,7 @@ def build(root: str) -> dict:
     symbols = ext["symbols"]
     edges = ext["symbol_edges"]
 
-    node_of = {s["id"]: NODE_OF.get(s["id"], "Прочее") for s in symbols}
+    node_of = {s["id"]: NODE_OF.get(s["id"], "Unassigned") for s in symbols}
     direct = compute_owners_by_node(symbols, edges, node_of)
 
     out_symbols = []
@@ -135,7 +135,7 @@ def build(root: str) -> dict:
         "symbol_edges": edges,
         "nodes": nodes,
         "node_edges": node_edges,
-        "domains": [{"id": "d_all", "name": "Проект"}],
+        "domains": [{"id": "d_all", "name": "Project"}],
         "domain_edges": [],
         "stats": {
             "symbols": len(measured),
@@ -159,5 +159,5 @@ def build(root: str) -> dict:
 if __name__ == "__main__":
     root = sys.argv[1] if len(sys.argv) > 1 else "."
     g = build(root)
-    print(f"graph.json записан: {len(g['symbols'])} символов, "
-          f"{len(g['nodes'])} узлов, shared {g['stats']['shared_symbols']}")
+    print(f"graph.json written: {len(g['symbols'])} symbols, "
+          f"{len(g['nodes'])} nodes, shared {g['stats']['shared_symbols']}")

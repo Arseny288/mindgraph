@@ -1,9 +1,9 @@
-// agent.ts — точка входа headless-агента (фаза 2.6).
+// agent.ts — headless agent entry point (phase 2.6).
 //
 //   node agent/src/main.ts --node <id> --task "..." \
 //       --dir <main-repo> --worktree <worktree> [--json]
 //
-// Первый режим работы — headless (без TUI). В --json — поток событий JSONL.
+// The first mode is headless (no TUI). With --json — a JSONL event stream.
 
 import { Agent } from "@earendil-works/pi-agent-core";
 import { createModels } from "@earendil-works/pi-ai";
@@ -26,6 +26,12 @@ export interface AgentCliOptions {
   thinking?: "off" | "on";
   maxMoves?: number;
   maxRefusals?: number;
+  /** Disable boundary checks (baseline run for task validation). */
+  noBoundary?: boolean;
+  /** refusal wording variant (eval 2.5 item 2). */
+  wording?: "old" | "new";
+  /** whether to mark foreign symbols in open_node (eval 2.5 item 3). */
+  markForeign?: boolean;
 }
 
 function emit(opts: AgentCliOptions, event: Record<string, unknown>): void {
@@ -50,7 +56,11 @@ export async function runAgent(opts: AgentCliOptions): Promise<number> {
   });
 
   const client = new MindGraphClient({ bin: opts.bin, dir: opts.dir });
-  const session = new Session(client, opts.worktree);
+  const session = new Session(client, opts.worktree, undefined, {
+    boundaryEnabled: !opts.noBoundary,
+    wording: opts.wording ?? "new",
+    markForeign: opts.markForeign ?? true,
+  });
 
   const ctx = await session.openNode(opts.node);
   emit(opts, { type: "node_opened", node_id: ctx.node_id, node_name: ctx.node_name });
@@ -58,21 +68,27 @@ export async function runAgent(opts: AgentCliOptions): Promise<number> {
   const models = createModels();
   models.setProvider(deepseekProvider());
   const model = models.getModel(provider, modelId);
-  if (!model) throw new Error(`модель ${provider}/${modelId} не найдена`);
+  if (!model) throw new Error(`model ${provider}/${modelId} not found`);
 
-  const systemPrompt = [
-    "Ты — агент вайб-кодинга с жёсткими границами узла.",
-    `Открытый узел: ${ctx.node_name} (${ctx.node_id}).`,
-    "Ты правишь ТОЛЬКО файлы своей зоны. У тебя нет универсального bash и",
-    "нет инструментов записи вне зоны: если операции нет в списке —",
-    "правильный ответ «инструмента нет», а не обходной путь.",
-    "Контракты (shared-символы) читать можно, менять их сигнатуру нельзя —",
-    "для изменения сигнатуры используй request_contract_change.",
-    "Состав тестов определяет run_tests (mindgraph), не ты.",
-    "Вердикт (ok/failed/unverified) смотри в ответе run_tests.",
-    "Если инструмент отказал — не пробуй тот же обход снова, а переформулируй",
-    "внутри зоны или сообщи, что не можешь.",
-  ].join("\n");
+  const systemPrompt = opts.noBoundary
+    ? [
+        "You are a vibe-coding agent. Complete the user's task.",
+        "You have the tools list_nodes/open_node/read_file/edit_file/",
+        "create_file/run_tests/request_contract_change. Edit the files you need.",
+      ].join("\n")
+    : [
+        "You are a vibe-coding agent with hard node boundaries.",
+        `Open node: ${ctx.node_name} (${ctx.node_id}).`,
+        "You edit ONLY files in your zone. You have no generic bash and no",
+        "write tools outside your zone: if an operation is not in the list, the",
+        "correct answer is \"no such tool\", not a workaround.",
+        "Contracts (shared symbols) can be read, their signatures cannot be",
+        "changed — to change a signature use request_contract_change.",
+        "The test set is decided by run_tests (mindgraph), not by you.",
+        "Read the verdict (ok/failed/unverified) from the run_tests response.",
+        "If a tool refused, do not retry the same workaround — rephrase within",
+        "the zone or report that you cannot.",
+      ].join("\n");
 
   const agent = new Agent({
     initialState: {
@@ -82,9 +98,10 @@ export async function runAgent(opts: AgentCliOptions): Promise<number> {
       thinkingLevel: opts.thinking === "on" ? "low" : "off",
     },
     streamFn: models.streamSimple.bind(models),
-    // Защита в глубину + лимит ходов/отказов.
+    // Defense in depth + move/refusal limit.
     afterToolCall: async (c) => {
-      if (c.toolCall.name === "edit_file" || c.toolCall.name === "create_file") {
+      if (!opts.noBoundary &&
+          (c.toolCall.name === "edit_file" || c.toolCall.name === "create_file")) {
         const guard = await runGuard(client, opts.worktree, ctx.node_id);
         emit(opts, {
           type: "verify_verdict",
@@ -106,11 +123,17 @@ export async function runAgent(opts: AgentCliOptions): Promise<number> {
       const refusalKind = c.isError
         ? classifyRefusal(c.toolCall.name, errorText(c))
         : null;
+      const resultText = errorText(c);
+      const unassigned =
+        c.toolCall.name === "create_file" && resultText.includes("UNASSIGNED");
       emit(opts, {
         type: "tool_outcome",
         tool: c.toolCall.name,
         refused: c.isError,
         refusal_kind: refusalKind,
+        unassigned,
+        refusal_text: c.isError ? errorText(c) : null,
+        args: c.args,
       });
       if (limiter.onMove(refusalKind)) {
         emit(opts, {

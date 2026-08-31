@@ -1,5 +1,5 @@
-"""Тесты фазы 2 (Python-часть): детерминированная сериализация, резолв
-.mindvibe/ из worktree, память узлов, диапазоны чужих символов для edit_file.
+"""Phase 2 tests (the Python part): deterministic serialization, resolving
+.mindvibe/ from a worktree, node memory, foreign symbol ranges for edit_file.
 """
 
 import json
@@ -20,7 +20,7 @@ def graph():
     return emit.build_graph(FIXTURE, no_llm=True)
 
 
-# --- 2. детерминированная сериализация контекста узла -----------------------
+# --- 2. deterministic serialization of a node context -----------------------
 
 def test_node_context_serialization_is_deterministic(graph):
     node = model.node_by_ref(graph, "auth")
@@ -43,13 +43,13 @@ def test_cli_node_output_byte_stable():
     assert json.loads(a)["schema_version"] == "1"
 
 
-# --- 3. резолв .mindvibe/ до главного репозитория ---------------------------
+# --- 3. resolving .mindvibe/ to the main repository ---------------------------
 
 def test_mindvibe_root_resolves_worktree_to_main_repo(tmp_path):
     main = tmp_path / "main"
     (main / ".mindvibe").mkdir(parents=True)
     (main / ".mindvibe" / "nodes.yaml").write_text(
-        "nodes:\n  - id: auth\n    title: Аутентификация\n    own_paths: [\"auth/**\"]\n",
+        "nodes:\n  - id: auth\n    title: Authentication\n    own_paths: [\"auth/**\"]\n",
         encoding="utf-8")
     wt = tmp_path / "wt"
     wt.mkdir()
@@ -57,9 +57,9 @@ def test_mindvibe_root_resolves_worktree_to_main_repo(tmp_path):
         f"gitdir: {main}/.git/worktrees/wt\n", encoding="utf-8")
 
     assert manifest.mindvibe_root(str(wt)) == str(main)
-    # манифест находится ИЗ worktree
+    # the manifest is found OUTSIDE the worktree
     nodes = manifest.load(str(wt))
-    assert nodes == [{"id": "auth", "title": "Аутентификация",
+    assert nodes == [{"id": "auth", "title": "Authentication",
                       "own_paths": ["auth/**"]}]
 
 
@@ -69,14 +69,14 @@ def test_mindvibe_root_no_worktree_returns_self(tmp_path):
     assert manifest.mindvibe_root(str(d)) == str(d)
 
 
-# --- 5. память узлов --------------------------------------------------------
+# --- 5. node memory --------------------------------------------------------
 
 def test_node_notes_read_write(tmp_path):
     root = str(tmp_path)
     assert manifest.read_note(root, "auth") is None
-    path = manifest.write_note(root, "auth", "помню: проверить токены")
+    path = manifest.write_note(root, "auth", "remember: check tokens")
     assert path.endswith(".mindvibe/notes/auth.md")
-    assert manifest.read_note(root, "auth") == "помню: проверить токены"
+    assert manifest.read_note(root, "auth") == "remember: check tokens"
     assert manifest.read_note(root, "billing") is None
 
 
@@ -88,14 +88,14 @@ def test_node_notes_resolve_to_main_repo_from_worktree(tmp_path):
     (wt / ".git").write_text(
         f"gitdir: {main}/.git/worktrees/wt\n", encoding="utf-8")
 
-    manifest.write_note(str(wt), "auth", "заметка")
-    assert manifest.read_note(str(main), "auth") == "заметка"
+    manifest.write_note(str(wt), "auth", "note")
+    assert manifest.read_note(str(main), "auth") == "note"
 
 
-# --- 1. диапазоны чужих символов для edit_file ------------------------------
+# --- 1. foreign symbol ranges for edit_file ------------------------------
 
 def test_foreign_symbol_ranges(graph):
-    # фикстура не содержит смешанных файлов — синтетический случай ниже
+    # the fixture has no mixed files — the synthetic case below
     from tests.test_phase15 import _mixed_graph
     g = _mixed_graph()
     ranges = model.foreign_symbol_ranges(g, "m/shared.py")

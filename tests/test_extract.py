@@ -1,7 +1,7 @@
-"""Тесты этапа A на синтетической фикстуре.
+"""Stage A tests on the synthetic fixture.
 
-Числа символов и рёбер зашиты точными значениями (см. §9.1 спеки): фикстура
-имеет заранее известную структуру, любое расхождение — регрессия.
+The symbol and edge counts are hardcoded to exact values (see §9.1 of the spec):
+the fixture has a known structure, any divergence is a regression.
 """
 
 import os
@@ -46,7 +46,7 @@ def test_symbol_ids():
         "billing.invoice.TaxInvoice", "billing.invoice.TaxInvoice.total",
         "billing.invoice.make_invoice",
         "cycle.a.alpha", "cycle.b.beta",
-        # псевдо-<module> на каждый распарсенный файл
+        # pseudo-<module> for every parsed file
         "common.utils.<module>", "auth.tokens.<module>", "auth.login.<module>",
         "billing.invoice.<module>", "cycle.a.<module>", "cycle.b.<module>",
     }
@@ -90,22 +90,22 @@ def test_edge_type_distribution():
 
 
 def test_binding_references_resolve():
-    # `from common.utils import CACHE` + CACHE[...] -> uses ребро на binding
+    # `from common.utils import CACHE` + CACHE[...] -> a uses edge onto the binding
     uses = _edges("uses")
     assert ("auth.tokens.issue", "common.utils.CACHE") in uses
     assert ("billing.invoice.Invoice.signature", "common.utils.CACHE") in uses
 
 
 def test_module_pseudosymbol_participates_in_edges():
-    # верхнеуровневый вызов alpha() приписан псевдо-<module>
+    # the top-level alpha() call is attributed to the pseudo-<module>
     calls = _edges("call")
     assert ("cycle.a.<module>", "cycle.a.alpha") in calls
 
 
 def test_no_fanout_only_real_mentions():
-    # verify_token импортирует issue (через login? нет — сам login.py), но НЕ
-    # упоминает ничего внутрирепозиторного в теле -> ноль исходящих рёбер.
-    # Это и есть отличие uses от старого веерного import.
+    # verify_token imports issue (via login? no — login.py itself), but does NOT
+    # mention anything in-repo in its body -> zero outgoing edges.
+    # This is exactly what distinguishes uses from the old fan-out import.
     out = {(e["from"], e["to"], e["type"])
            for e in _graph()["symbol_edges"]
            if e["from"] == "auth.login.verify_token"}
@@ -115,7 +115,7 @@ def test_no_fanout_only_real_mentions():
 def test_call_absorbs_uses_after_dedup():
     uses = _edges("uses")
     calls = _edges("call")
-    # для вызванных пар остаётся только call, uses выкинут дедупом
+    # for called pairs only call remains, uses is dropped by dedup
     for pair in [
         ("auth.tokens.issue", "common.utils.hash_value"),
         ("auth.login.login", "common.utils.normalize"),   # module.attr
@@ -130,8 +130,8 @@ def test_uses_without_call_and_weight():
     uses = _edges("uses")
     calls = _edges("call")
     key = ("billing.invoice.make_invoice", "billing.invoice.Invoice")
-    # make_invoice упоминает Invoice дважды (аннотация + присваивание),
-    # но напрямую не вызывает его -> uses с весом 2, никакого call.
+    # make_invoice mentions Invoice twice (annotation + assignment),
+    # but does not call it directly -> uses with weight 2, no call.
     assert uses[key] == 2
     assert key not in calls
 
@@ -162,7 +162,7 @@ def test_incoming_to_invoice():
 
 
 def test_relative_import_resolution():
-    # `from .tokens import issue` резолвится через позицию файла в дереве.
+    # `from .tokens import issue` resolves via the file's position in the tree.
     calls = _edges("call")
     assert ("auth.login.login", "auth.tokens.issue") in calls
 
@@ -172,7 +172,7 @@ def test_cycle_does_not_break_and_is_bidirectional():
     uses = _edges("uses")
     assert ("cycle.a.alpha", "cycle.b.beta") in calls
     assert ("cycle.b.beta", "cycle.a.alpha") in calls
-    # обе пары вызваны -> uses выкинут дедупом
+    # both pairs are called -> uses is dropped by dedup
     assert ("cycle.a.alpha", "cycle.b.beta") not in uses
     assert ("cycle.b.beta", "cycle.a.alpha") not in uses
 

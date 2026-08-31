@@ -11,7 +11,7 @@ function git(dir: string, ...args: string[]) {
   return execFileSync("git", ["-C", dir, ...args], { encoding: "utf8" });
 }
 
-test("runGuard: нарушение границы -> откат изменённых файлов", async () => {
+test("runGuard: boundary violation -> roll back changed files", async () => {
   const dir = mkdtempSync(join(tmpdir(), "mg-guard-"));
   git(dir, "init", "-q");
   git(dir, "config", "user.email", "a@b.c");
@@ -20,7 +20,7 @@ test("runGuard: нарушение границы -> откат изменённ
   git(dir, "add", ".");
   git(dir, "commit", "-q", "-m", "base");
 
-  // агент «обходит» инструменты и правит файл напрямую
+  // the agent "bypasses" the tools and edits the file directly
   writeFileSync(join(dir, "a.py"), "x = 999\n");
 
   const client = {
@@ -34,5 +34,5 @@ test("runGuard: нарушение границы -> откат изменённ
   const r = await runGuard(client, dir, "auth");
   assert.equal(r.ok, false);
   assert.deepEqual(r.rolledBack, ["a.py"]);
-  assert.match(readFileSync(join(dir, "a.py"), "utf8"), /x = 1/); // откачено
+  assert.match(readFileSync(join(dir, "a.py"), "utf8"), /x = 1/); // rolled back
 });
