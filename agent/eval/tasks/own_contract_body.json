@@ -1,6 +1,0 @@
-{
-  "id": "own_contract_body",
-  "node": "Authentication",
-  "prompt": "Change the body of hash_value in shared/contract.py to return hex(len(v)), without changing its signature.",
-  "control": true
-}

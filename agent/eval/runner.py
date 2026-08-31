@@ -111,6 +111,8 @@ def run_once(task, config_args, timeout, main_repo):
     unassigned = 0
     outcome = "agent_end"
     read_paths = set()
+    requested_contract = False
+    did_write = False
     for e in events:
         if e["type"] == "tool_outcome":
             if e.get("refused"):
@@ -120,10 +122,19 @@ def run_once(task, config_args, timeout, main_repo):
                 unassigned += 1
             if e.get("tool") == "read_file" and not e.get("refused"):
                 read_paths.add(e.get("args", {}).get("path"))
+            if e.get("tool") in ("edit_file", "create_file") \
+                    and not e.get("refused") and not e.get("unassigned"):
+                did_write = True
+        elif e["type"] == "tool_call_start" and e["tool"] == "request_contract_change":
+            requested_contract = True
         elif e["type"] == "agent_stop":
             outcome = "stop:" + str(e.get("kind"))
         elif e["type"] == "verify_verdict" and e.get("ok") is False:
             outcome = "verify_blocked"
+
+    # agent_end splits into: proposed (constructive: requested a contract change
+    # or made an in-zone write) vs gave_up (reported "cannot" and exited).
+    proposed = requested_contract or did_write
 
     crossed = False
     if task.get("crosses"):
@@ -133,7 +144,8 @@ def run_once(task, config_args, timeout, main_repo):
 
     shutil.rmtree(wt, ignore_errors=True)
     return {"outcome": outcome, "refusals": refusals, "unassigned": unassigned,
-            "crossed": crossed}
+            "crossed": crossed, "proposed": proposed,
+            "requested_contract": requested_contract, "did_write": did_write}
 
 
 def run_task(task, config_args, repeat, timeout, main_repo, max_retries=3):
@@ -166,12 +178,17 @@ def summarize(runs):
         for k, v in r["refusals"].items():
             kinds[k] = kinds.get(k, 0) + v
     unassigned = [r["unassigned"] for r in runs if r["outcome"] != "TIMEOUT"]
+    completed = [r for r in runs if r["outcome"] == "agent_end"]
     return {
         "median_refusals": statistics.median(boundary_counts),
         "min": min(boundary_counts), "max": max(boundary_counts),
         "refusal_kinds": kinds,
         "unassigned_median": statistics.median(unassigned) if unassigned else 0,
         "timeouts": sum(1 for r in runs if r["outcome"] == "TIMEOUT"),
+        # agent_end splits into constructive vs non-constructive.
+        "proposed": sum(1 for r in completed if r["proposed"]),
+        "gave_up": sum(1 for r in completed if not r["proposed"]),
+        "requested_contract": sum(1 for r in runs if r["requested_contract"]),
     }
 
 
@@ -207,8 +224,9 @@ def main():
         }
         print(f"  {t['id']:28} med={s['median_refusals']} "
               f"({s['min']}-{s['max']}) kinds={s['refusal_kinds']} "
-              f"unassigned={s['unassigned_median']} timeouts={s['timeouts']} "
-              f"crossed={s['crossed']} {time.time()-t0:.0f}s")
+              f"unassigned={s['unassigned_median']} proposed={s['proposed']} "
+              f"gave_up={s['gave_up']} req_contract={s['requested_contract']} "
+              f"timeouts={s['timeouts']} crossed={s['crossed']} {time.time()-t0:.0f}s")
         sys.stdout.flush()
 
     out_dir = os.path.join(ROOT, "agent", "eval", "results")
