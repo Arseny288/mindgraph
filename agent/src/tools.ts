@@ -27,11 +27,24 @@ export function buildTools(session: Session): AgentTool[] {
       name: "open_node",
       label: "Открыть узел",
       description:
-        "Контекст узла: зона (owned/contracts/foreign), контракты с сигнатурами, смешанные файлы. Это заменяет «прочитать весь репозиторий».",
+        "Контекст узла: зона, контракты, смешанные файлы. Это заменяет «прочитать весь репозиторий».",
       parameters: Type.Object({ id: Type.String({ description: "id или имя узла" }) }),
       async execute(_id, params) {
         const ctx = await session.openNode(params.id);
-        return text(JSON.stringify(ctx, null, 2));
+        const b = ctx.boundary;
+        const foreign = ctx.foreign_symbols.map((f) =>
+          `  - ${f.symbol} (хозяин: узел «${f.owner}», ${f.file}:${f.lines[0]}-${f.lines[1]})`,
+        );
+        const view = {
+          node_id: ctx.node_id,
+          node_name: ctx.node_name,
+          allow_write: b.allow_write,
+          allow_create: b.allow_create,
+          allow_read: b.allow_read,
+          contracts: b.contracts,
+          "ЧУЖИЕ_СИМВОЛЫ_В_ЗОНЕ_НЕ_ТРОГАТЬ": foreign,
+        };
+        return text(JSON.stringify(view, null, 2));
       },
     },
     {

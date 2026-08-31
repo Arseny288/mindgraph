@@ -100,6 +100,12 @@ export type WriteDecision =
   | { ok: false; reason: "outside_node_zone"; message: string }
   | { ok: false; reason: "foreign_symbol"; foreign: ForeignRange; message: string };
 
+/**
+ * Отказ — часть продукта: это единственный канал, которым агент управляет
+ * поведением после стены. Поэтому формулировка несёт (1) чей это символ/файл,
+ * (2) узел-хозяин, (3) что делать: остаться в зоне / запросить смену контракта /
+ * сменить узел.
+ */
 export function checkEdit(
   boundary: Boundary,
   path: string,
@@ -110,7 +116,10 @@ export function checkEdit(
     return {
       ok: false,
       reason: "outside_node_zone",
-      message: `файл ${path} вне allow_write узла ${boundary.node_name}`,
+      message:
+        `ОТКАЗ: ${path} вне твоей зоны узла «${boundary.node_name}». ` +
+        `Это файл другого узла — редактировать его нельзя. ` +
+        `Останься в allow_write, либо открой другой узел (open_node).`,
     };
   }
   const mixed = mixedFileOf(boundary, path);
@@ -123,7 +132,12 @@ export function checkEdit(
           ok: false,
           reason: "foreign_symbol",
           foreign,
-          message: `правка ${path}:${range[0]}-${range[1]} затрагивает чужой символ ${foreign.symbol} (узел ${foreign.node})`,
+          message:
+            `ОТКАЗ: правка ${path}:${range[0]}-${range[1]} затрагивает чужой символ ` +
+            `${foreign.symbol} (хозяин — узел «${foreign.node}»). ` +
+            `Символ не принадлежит узлу «${boundary.node_name}». ` +
+            `Правь только свои строки; если нужно изменить чужую сигнатуру — ` +
+            `вызови request_contract_change, а не edit_file.`,
         };
       }
     }
@@ -141,6 +155,9 @@ export function checkCreate(
   return {
     ok: false,
     reason: "outside_node_zone",
-    message: `создание ${path} вне allow_create: маршрутизирую в «Неразобранное», а не отказываю`,
+    message:
+      `НЕРАЗОБРАННОЕ: создание ${path} вне allow_create узла «${boundary.node_name}». ` +
+      `Это не твоя зона — файл не создан. Создай файл в allow_create, ` +
+      `либо открой узел-хозяин этого каталога.`,
   };
 }

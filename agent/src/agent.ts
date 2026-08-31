@@ -12,6 +12,7 @@ import { MindGraphClient } from "./mindgraph.ts";
 import { Session } from "./session.ts";
 import { buildTools } from "./tools.ts";
 import { runGuard } from "./guard.ts";
+import { Limiter, classifyRefusal } from "./limiter.ts";
 
 export interface AgentCliOptions {
   node: string;
@@ -22,6 +23,9 @@ export interface AgentCliOptions {
   model?: string;
   json?: boolean;
   bin?: string;
+  thinking?: "off" | "on";
+  maxMoves?: number;
+  maxRefusals?: number;
 }
 
 function emit(opts: AgentCliOptions, event: Record<string, unknown>): void {
@@ -32,9 +36,18 @@ function emit(opts: AgentCliOptions, event: Record<string, unknown>): void {
   }
 }
 
+function errorText(c: { result: any }): string {
+  const content = c.result?.content ?? [];
+  return content.map((b: any) => (b.type === "text" ? b.text : "")).join("\n");
+}
+
 export async function runAgent(opts: AgentCliOptions): Promise<number> {
   const provider = opts.provider ?? "deepseek";
   const modelId = opts.model ?? "deepseek-v4-flash";
+  const limiter = new Limiter({
+    maxMoves: opts.maxMoves ?? 40,
+    maxConsecutiveRefusals: opts.maxRefusals ?? 4,
+  });
 
   const client = new MindGraphClient({ bin: opts.bin, dir: opts.dir });
   const session = new Session(client, opts.worktree);
@@ -57,6 +70,8 @@ export async function runAgent(opts: AgentCliOptions): Promise<number> {
     "для изменения сигнатуры используй request_contract_change.",
     "Состав тестов определяет run_tests (mindgraph), не ты.",
     "Вердикт (ok/failed/unverified) смотри в ответе run_tests.",
+    "Если инструмент отказал — не пробуй тот же обход снова, а переформулируй",
+    "внутри зоны или сообщи, что не можешь.",
   ].join("\n");
 
   const agent = new Agent({
@@ -64,31 +79,59 @@ export async function runAgent(opts: AgentCliOptions): Promise<number> {
       systemPrompt,
       model,
       tools: buildTools(session),
-      thinkingLevel: "off",
+      thinkingLevel: opts.thinking === "on" ? "low" : "off",
     },
     streamFn: models.streamSimple.bind(models),
-    // Защита в глубину: после каждой записи — git diff + verify.
+    // Защита в глубину + лимит ходов/отказов.
     afterToolCall: async (c) => {
-      if (c.toolCall.name !== "edit_file" && c.toolCall.name !== "create_file") {
-        return undefined;
+      if (c.toolCall.name === "edit_file" || c.toolCall.name === "create_file") {
+        const guard = await runGuard(client, opts.worktree, ctx.node_id);
+        emit(opts, {
+          type: "verify_verdict",
+          tool: c.toolCall.name,
+          ok: guard.ok,
+          violations: guard.verdict?.violations ?? [],
+          rolled_back: guard.rolledBack,
+        });
+        if (!guard.ok && guard.incident) {
+          return {
+            content: [{ type: "text", text: guard.incident }],
+            details: {},
+            isError: true,
+            terminate: true,
+          };
+        }
       }
-      const guard = await runGuard(client, opts.worktree, ctx.node_id);
+
+      const refusalKind = c.isError
+        ? classifyRefusal(c.toolCall.name, errorText(c))
+        : null;
       emit(opts, {
-        type: "verify_verdict",
+        type: "tool_outcome",
         tool: c.toolCall.name,
-        ok: guard.ok,
-        violations: guard.verdict?.violations ?? [],
-        rolled_back: guard.rolledBack,
+        refused: c.isError,
+        refusal_kind: refusalKind,
       });
-      if (!guard.ok && guard.incident) {
-        return {
-          content: [{ type: "text", text: guard.incident }],
-          details: {},
-          isError: true,
-          terminate: true,
-        };
+      if (limiter.onMove(refusalKind)) {
+        emit(opts, {
+          type: "agent_stop",
+          reason: limiter.stopped?.reason,
+          kind: limiter.stopped?.kind,
+        });
+        return { terminate: true };
       }
       return undefined;
+    },
+    shouldStopAfterTurn: async () => {
+      if (limiter.stopped) {
+        emit(opts, {
+          type: "agent_stop",
+          reason: limiter.stopped.reason,
+          kind: limiter.stopped.kind,
+        });
+        return true;
+      }
+      return false;
     },
   });
 
@@ -100,7 +143,10 @@ export async function runAgent(opts: AgentCliOptions): Promise<number> {
     } else if (event.type === "agent_start") {
       emit(opts, { type: "agent_start" });
     } else if (event.type === "agent_end") {
-      emit(opts, { type: "agent_end" });
+      emit(opts, {
+        type: "agent_end",
+        stop_reason: limiter.stopped?.reason ?? null,
+      });
     }
   });
 

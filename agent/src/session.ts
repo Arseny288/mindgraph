@@ -33,6 +33,8 @@ export interface OpenNodeContext {
   node_name: string;
   boundary: Boundary;
   node: any;
+  /** Чужие символы в смешанных файлах зоны — их нельзя трогать. */
+  foreign_symbols: { symbol: string; owner: string; file: string; lines: [number, number] }[];
 }
 
 export class Session {
@@ -85,11 +87,23 @@ export class Session {
       this.client.node(id),
       this.client.boundary(id),
     ]);
+    const foreign_symbols: OpenNodeContext["foreign_symbols"] = [];
+    for (const m of boundary.mixed ?? []) {
+      for (const fr of m.foreign_ranges ?? []) {
+        foreign_symbols.push({
+          symbol: fr.symbol,
+          owner: fr.node,
+          file: m.file,
+          lines: fr.lines,
+        });
+      }
+    }
     this.opened = {
       node_id: boundary.node_id,
       node_name: boundary.node_name,
       boundary,
       node,
+      foreign_symbols,
     };
     return this.opened;
   }
@@ -97,7 +111,11 @@ export class Session {
   async readFile(p: string): Promise<string> {
     const b = this.requireBoundary();
     if (!matchesAny(p, b.allow_read)) {
-      throw new BoundaryError(`чтение ${p} запрещено: вне allow_read узла ${b.node_name}`);
+      throw new BoundaryError(
+        `ОТКАЗ: чтение ${p} вне allow_read узла «${b.node_name}». ` +
+        `Это файл другого узла — читать его нельзя. ` +
+        `Читай только allow_read, либо открой другой узел.`,
+      );
     }
     const abs = this.absPath(p);
     if (!this.fs.exists(abs)) {

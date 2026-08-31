@@ -22,6 +22,8 @@ import argparse
 import json
 import logging
 import os
+import shutil
+import subprocess
 import sys
 
 from . import emit, llmcache, model, verify as verify_mod, testselect, impact as impact_mod
@@ -300,6 +302,41 @@ def _read_diff(diff: str) -> str:
         sys.exit(EXIT_RUNTIME)
 
 
+def _agent_main() -> str:
+    return os.path.join(_TOOL_ROOT, "agent", "src", "main.ts")
+
+
+def _cmd_agent(args) -> int:
+    """Запустить TS-агента (фаза 2.5, п.5). ``node agent/src/main.ts`` — внутренний."""
+    agent_main = _agent_main()
+    if not os.path.exists(agent_main):
+        print(f"mindgraph: агент не найден ({agent_main}); "
+              f"нужен каталог agent/ в корне инструмента", file=sys.stderr)
+        return EXIT_RUNTIME
+
+    node_bin = shutil.which("node")
+    if node_bin is None:
+        print("mindgraph: не найден node (нужен для агента)", file=sys.stderr)
+        return EXIT_RUNTIME
+
+    # Бин, которым агент будет звать mindgraph внутри себя.
+    mindgraph_bin = shutil.which("mindgraph") or sys.argv[0]
+
+    cmd = [node_bin, agent_main,
+           "--node", args.node, "--task", args.task,
+           "--dir", os.path.abspath(args.dir),
+           "--worktree", os.path.abspath(args.worktree or args.dir),
+           "--bin", mindgraph_bin]
+    if args.json:
+        cmd.append("--json")
+    if args.thinking:
+        cmd += ["--thinking", args.thinking]
+    if args.model:
+        cmd += ["--model", args.model]
+
+    return subprocess.call(cmd)
+
+
 # --- Парсер ----------------------------------------------------------------
 
 def _add_llm_flags(p, with_regroup=True):
@@ -367,6 +404,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--worktree", default=None,
                    help="корень worktree с новой стороной диффа (по умолчанию --dir)")
 
+    p = sub.add_parser("agent", help="headless-агент с границами узла")
+    p.add_argument("--node", required=True, help="id/имя узла")
+    p.add_argument("--task", required=True, help="задача")
+    p.add_argument("--dir", default=".", help="главный репозиторий (graph.json)")
+    p.add_argument("--worktree", default=None, help="git worktree сессии")
+    p.add_argument("--model", default=None)
+    p.add_argument("--thinking", default=None, choices=["off", "on"])
+    p.add_argument("--json", action="store_true")
+
     return ap
 
 
@@ -383,6 +429,7 @@ _DISPATCH = {
     "boundary": _cmd_boundary,
     "tests": _cmd_tests,
     "verify": _cmd_verify,
+    "agent": _cmd_agent,
 }
 
 

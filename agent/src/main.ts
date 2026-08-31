@@ -4,13 +4,15 @@ import { runAgent } from "./agent.ts";
 
 function parseArgv(argv: string[]) {
   const opts: Record<string, string | boolean> = { json: false };
+  const valueFlags = new Set([
+    "node", "task", "dir", "worktree", "provider", "model", "bin",
+    "thinking", "max-moves", "max-refusals",
+  ]);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--json") opts.json = true;
-    else if (a === "--node" || a === "--task" || a === "--dir" ||
-             a === "--worktree" || a === "--provider" || a === "--model" ||
-             a === "--bin") {
-      opts[a.slice(2)] = argv[++i];
+    else if (a.startsWith("--") && valueFlags.has(a.slice(2))) {
+      opts[a.slice(2).replace(/-/g, "")] = argv[++i];
     }
   }
   if (!opts.node || !opts.task || !opts.dir || !opts.worktree) {
