@@ -116,6 +116,25 @@ def mixed_files(graph: dict) -> dict:
     return mixed
 
 
+def foreign_symbol_ranges(graph: dict, file: str) -> list:
+    """Чужие символы смешанного файла с диапазонами строк.
+
+    Нужно агенту (фаза 2.1): ``edit_file`` проверяет затронутые диапазоны ДО
+    записи и отказывает, если они принадлежат чужому символу.
+    """
+    m = mixed_files(graph).get(file)
+    if m is None:
+        return []
+    sym_by_id = _symbol_by_id(graph)
+    out = []
+    for node, ids in sorted(m["foreign"].items()):
+        for sid in ids:
+            s = sym_by_id.get(sid)
+            if s is not None:
+                out.append({"symbol": sid, "node": node, "lines": s["lines"]})
+    return out
+
+
 def mixed_file_stats(graph: dict) -> dict:
     """Метрика смешанности файлов для отчёта (фаза 1.5)."""
     fn = file_symbol_nodes(graph)
@@ -184,7 +203,8 @@ def node_view(graph: dict, node: dict) -> dict:
         {"file": f, "owner": mixed[f]["owner"],
          "foreign_symbols": sorted(
              sid for ids in mixed[f]["foreign"].values() for sid in ids),
-         "foreign_nodes": sorted(mixed[f]["foreign"])}
+         "foreign_nodes": sorted(mixed[f]["foreign"]),
+         "foreign_ranges": foreign_symbol_ranges(graph, f)}
         for f in owned_files if f in mixed and mixed[f]["owner"] == node["name"]
     ]
 
@@ -280,7 +300,8 @@ def boundary(graph: dict, node: dict) -> dict:
         {"file": f, "owner": mixed[f]["owner"],
          "foreign_symbols": sorted(
              sid for ids in mixed[f]["foreign"].values() for sid in ids),
-         "foreign_nodes": sorted(mixed[f]["foreign"])}
+         "foreign_nodes": sorted(mixed[f]["foreign"]),
+         "foreign_ranges": foreign_symbol_ranges(graph, f)}
         for f in owned_files if f in mixed
     ]
 

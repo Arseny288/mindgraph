@@ -97,7 +97,9 @@ def _print_stats(graph: dict) -> None:
 
 
 def _out_json(obj: dict) -> None:
-    print(json.dumps(obj, ensure_ascii=False))
+    # sort_keys + ensure_ascii=False: побайтово стабильный вывод между
+    # запусками/процессами — важен для prompt caching провайдера (фаза 2.2).
+    print(json.dumps(obj, ensure_ascii=False, sort_keys=True))
 
 
 def _load_graph(dir_: str) -> dict:

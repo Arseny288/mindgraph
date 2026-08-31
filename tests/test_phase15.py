@@ -76,6 +76,8 @@ def test_node_view_lists_mixed_and_foreign_symbols():
         "file": "m/shared.py", "owner": "auth",
         "foreign_symbols": ["m.shared.bill_util"],
         "foreign_nodes": ["billing"],
+        "foreign_ranges": [{"symbol": "m.shared.bill_util", "node": "billing",
+                            "lines": [4, 5]}],
     }]
 
 

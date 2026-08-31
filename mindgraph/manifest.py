@@ -32,8 +32,67 @@ except ImportError:
 MANIFEST_REL = os.path.join(".mindvibe", "nodes.yaml")
 
 
+def mindvibe_root(root: str) -> str:
+    """Корень ГЛАВНОГО репозитория, где лежит ``.mindvibe/`` (не worktree).
+
+    Сессии идут в ``git worktree``: у worktree ``.git`` — это ФАЙЛ
+    ``gitdir: <main>/.git/worktrees/<name>``. Если резолвить ``.mindvibe`` от
+    рабочей директории, каждая сессия стартует с пустым манифестом и памятью.
+    Поэтому поднимаемся к главному репо по этому указателю, если ``.mindvibe``
+    в текущем корне отсутствует.
+    """
+    root = os.path.abspath(root)
+
+    def _has(d):
+        return os.path.isdir(os.path.join(d, ".mindvibe"))
+
+    if _has(root):
+        return root
+
+    gitfile = os.path.join(root, ".git")
+    if os.path.isfile(gitfile):
+        try:
+            content = open(gitfile, encoding="utf-8").read()
+            if content.startswith("gitdir:"):
+                gitdir = content.split(":", 1)[1].strip()
+                # <main>/.git/worktrees/<name> -> <main> (три уровня вверх)
+                main_root = os.path.abspath(os.path.join(
+                    gitdir, os.pardir, os.pardir, os.pardir))
+                if _has(main_root):
+                    return main_root
+        except OSError:
+            pass
+    return root
+
+
 def manifest_path(root: str) -> str:
-    return os.path.join(os.path.abspath(root), MANIFEST_REL)
+    return os.path.join(mindvibe_root(root), MANIFEST_REL)
+
+
+def notes_dir(root: str) -> str:
+    return os.path.join(mindvibe_root(root), ".mindvibe", "notes")
+
+
+def read_note(root: str, node_id: str) -> str | None:
+    """Память узла ``.mindvibe/notes/<node_id>.md``; нет файла -> None.
+
+    Грузится ТОЛЬКО при открытом узле (агент вызывает при ``open_node``).
+    Проектного файла уровня не существует.
+    """
+    path = os.path.join(notes_dir(root), f"{node_id}.md")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return fh.read()
+    except OSError:
+        return None
+
+
+def write_note(root: str, node_id: str, content: str) -> str:
+    path = os.path.join(notes_dir(root), f"{node_id}.md")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(content)
+    return path
 
 
 def load(root: str) -> list:
