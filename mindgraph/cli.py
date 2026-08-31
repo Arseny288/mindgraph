@@ -281,8 +281,9 @@ def _cmd_verify(args) -> int:
         return EXIT_RUNTIME
 
     diff_text = _read_diff(args.diff)
+    worktree = getattr(args, "worktree", None) or args.dir
     result = verify_mod.verify(graph, node, diff_text,
-                               original_dir=os.path.abspath(args.dir))
+                               original_dir=os.path.abspath(worktree))
     _out_json(result)
     return EXIT_BOUNDARY if not result["ok"] else EXIT_OK
 
@@ -363,6 +364,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--node", required=True)
     p.add_argument("--diff", required=True, help="путь к диффу или '-' (stdin)")
     p.add_argument("--dir", default=".")
+    p.add_argument("--worktree", default=None,
+                   help="корень worktree с новой стороной диффа (по умолчанию --dir)")
 
     return ap
 

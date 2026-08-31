@@ -1,0 +1,17 @@
+{
+  "name": "mindgraph-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "mindvibe agent: граф-ориентированный агент с жёсткими границами узлов (фаза 2)",
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "0.84.4",
+    "@earendil-works/pi-ai": "0.84.4"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.0"
+  }
+}
