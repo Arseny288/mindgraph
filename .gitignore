@@ -28,3 +28,6 @@ screenshot_*.png
 
 # --- результаты eval (генерируются runner'ом) ---
 agent/eval/results/
+
+# --- логи eval-прогонов ---
+agent/eval/logs/
