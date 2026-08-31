@@ -89,28 +89,46 @@ def test_boundary_lists_mixed_and_allow_create():
 
 # --- символьный verify ------------------------------------------------------
 
-def test_verify_foreign_symbol_in_mixed_file_is_violation():
+def _write_new(tmp_path, content):
+    p = tmp_path / "m" / "shared.py"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(content, encoding="utf-8")
+    return str(tmp_path)
+
+
+_BASE_SHARED = "def auth_util():\n    pass\n\ndef bill_util():\n    pass\n"
+
+
+def test_verify_foreign_symbol_in_mixed_file_is_violation(tmp_path):
     g = _mixed_graph()
     node = model.node_by_ref(g, "auth")
+    _write_new(tmp_path,
+               "def auth_util():\n    pass\n\ndef bill_util(x):\n    pass\n")
     # дифф трогает строку 4 — символ billing в смешанном файле зоны
     diff = ("diff --git a/m/shared.py b/m/shared.py\n"
             "--- a/m/shared.py\n"
             "+++ b/m/shared.py\n"
-            "@@ -4,1 +4,1 @@\n-old\n+new\n")
-    r = verify.verify(g, node, diff)
+            "@@ -4,1 +4,1 @@\n"
+            "-def bill_util():\n"
+            "+def bill_util(x):\n")
+    r = verify.verify(g, node, diff, original_dir=str(tmp_path))
     assert r["ok"] is False
     assert any(v["reason"] == "foreign_symbol_in_shared_file" and
                v["symbol"] == "m.shared.bill_util" for v in r["violations"])
 
 
-def test_verify_own_symbol_in_mixed_file_is_ok():
+def test_verify_own_symbol_in_mixed_file_is_ok(tmp_path):
     g = _mixed_graph()
     node = model.node_by_ref(g, "auth")
+    _write_new(tmp_path,
+               "def auth_util(x):\n    pass\n\ndef bill_util():\n    pass\n")
     diff = ("diff --git a/m/shared.py b/m/shared.py\n"
             "--- a/m/shared.py\n"
             "+++ b/m/shared.py\n"
-            "@@ -1,1 +1,1 @@\n-old\n+new\n")
-    r = verify.verify(g, node, diff)
+            "@@ -1,1 +1,1 @@\n"
+            "-def auth_util():\n"
+            "+def auth_util(x):\n")
+    r = verify.verify(g, node, diff, original_dir=str(tmp_path))
     assert r["ok"] is True
 
 

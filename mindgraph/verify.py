@@ -1,24 +1,30 @@
-"""verify.py — механическая проверка диффа против границы узла (фаза 1.3).
+"""verify.py — механическая проверка диффа против границы узла (фаза 1.3, 1.5).
 
-Без LLM. Два класса нарушений:
+Без LLM. Проверяет ДО символов, по кумулятивному диффу от базового коммита
+сессии (не по приросту одного хода — иначе диапазоны строк «едут» после первой
+правки):
 
-* ``outside_node_zone`` — дифф трогает файл вне ``allow_write`` узла (по путям);
-* ``contract_signature_changed`` — файл в зоне, но изменилась сигнатура
-  контрактного символа (сверка по ``sha256(sig)``).
+* ``outside_node_zone`` — дифф трогает файл вне ``allow_write`` узла;
+* ``foreign_symbol_in_shared_file`` — изменён символ чужого узла в смешанном
+  файле зоны (изменение тела/сигнатуры либо удаление символа целиком);
+* ``contract_signature_changed`` — изменена сигнатура контрактного (shared)
+  символа, которым владеет сам узел;
+* ``unattributed_change`` — строки файла зоны, не принадлежащие ни одному
+  символу (импорты, код верхнего уровня): НЕ нарушение, но и не тихий ``ok``.
 
-Пути нормализуются: срезаются git-префиксы ``a/``/``b/``, ``..`` и абсолютные
-пути за пределы репо отсекаются (считаются нарушением).
+Атрибуция новой стороны диффа — переизвлечением символов из ИЗМЕНЁННЫХ ФАЙЛОВ
+(``original_dir`` — корень worktree; там уже применён кумулятивный дифф), а не
+по ``symbols[].lines`` из graph.json (они относятся к базовому состоянию).
 """
 
 from __future__ import annotations
 
 import ast
-import hashlib
 import os
 import re
 
 from . import model
-from .extract import _module_id
+from .extract import _collect_symbols, _module_id
 
 try:
     import pathspec
@@ -45,7 +51,6 @@ def _matches_globs(path: str, globs) -> bool:
     if pathspec is not None:
         spec = pathspec.PathSpec.from_lines("gitignore", list(globs))
         return spec.match_file(path)
-    # без pathspec — простое префиксное/суффиксное совпадение для «x/**».
     for g in globs:
         if g.endswith("/**"):
             if path == g[:-3] or path.startswith(g[:-3] + "/"):
@@ -79,103 +84,90 @@ def _parse_diff(text: str) -> list:
     return [f for f in files if f["path"]]
 
 
-def _apply_diff(original: str, hunks: list) -> str:
-    """Реконструировать новое содержимое файла по хункам (best-effort)."""
-    orig_lines = original.splitlines()
-    out = []
-    pos = 0  # индекс в orig_lines (0-based)
+def _hunk_line_ranges(hunks: list):
+    """Разобрать хунки на (added_new, removed_base) — номера ИЗМЕНЁННЫХ строк.
+
+    Только строки ``+`` (в координатах новой стороны) и ``-`` (в координатах
+    базовой стороны); контекстные строки не считаются изменениями.
+    """
+    added = []
+    removed = []
     for hunk in hunks:
-        m = re.search(r"@@ -(\d+)(?:,(\d+))?", hunk["header"])
+        m = re.search(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))?",
+                      hunk["header"])
         if not m:
             continue
-        old_start = int(m.group(1)) - 1  # 0-based
-        if old_start < pos:
-            old_start = pos
-        out.extend(orig_lines[pos:old_start])
-        pos = old_start
+        base_line = int(m.group(1))
+        new_line = int(m.group(3))
         for ln in hunk["lines"]:
-            if ln.startswith(" "):
-                if pos < len(orig_lines):
-                    out.append(orig_lines[pos])
-                    pos += 1
+            if ln.startswith("+"):
+                added.append(new_line)
+                new_line += 1
             elif ln.startswith("-"):
-                pos += 1  # удаляем строку оригинала
-            elif ln.startswith("+"):
-                out.append(ln[1:])
-            elif ln == "\\ No newline at end of file":
-                pass
-    out.extend(orig_lines[pos:])
-    return "\n".join(out)
+                removed.append(base_line)
+                base_line += 1
+            elif ln.startswith("\\"):
+                pass  # "\ No newline at end of file"
+            else:  # контекст
+                base_line += 1
+                new_line += 1
+    return added, removed
 
 
-def _local_signatures(text: str) -> dict:
-    """``{локальное_имя: сигнатура}`` для top-level def/class + методы."""
-    from .extract import _signature
-    sigs = {}
+def _extract_file_symbols(path: str, text: str) -> dict:
+    """Переизвлечь РЕАЛЬНЫЕ символы файла: ``{id: {lines, sig}}`` (новая сторона)."""
     try:
         tree = ast.parse(text)
     except SyntaxError:
-        return sigs
-    for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            sigs[node.name] = _signature(node)
-        elif isinstance(node, ast.ClassDef):
-            sigs[node.name] = _signature(node)
-            for m in node.body:
-                if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    sigs[f"{node.name}.{m.name}"] = _signature(m)
-    return sigs
+        return {}
+    syms = _collect_symbols(_module_id(path), path, tree)
+    return {s["id"]: {"lines": s["lines"], "sig": s["sig"]}
+            for s in syms if not s.get("synthetic")}
 
 
-def _changed_line_ranges(hunks: list) -> list:
-    """Оригинальные диапазоны строк, затронутых хунками (1-based, включительно)."""
-    ranges = []
-    for hunk in hunks:
-        m = re.search(r"@@ -(\d+)(?:,(\d+))?", hunk["header"])
-        if not m:
-            continue
-        start = int(m.group(1))
-        count = int(m.group(2)) if m.group(2) else 1
-        if count > 0:
-            ranges.append((start, start + count - 1))
-    return ranges
+def _overlaps_lines(lines, points) -> bool:
+    lo, hi = lines[0], lines[1]
+    return any(lo <= p <= hi for p in points)
 
 
-def _touched_symbols(graph: dict, path: str, ranges: list) -> list:
-    """Реальные символы файла, чьи строки пересекаются с затронутыми."""
-    if not ranges:
+def _collapse_points(points) -> list:
+    """Свернуть отсортированные номера строк в интервалы ``[[a, b], ...]``."""
+    if not points:
         return []
-    syms = [s for s in graph["symbols"]
-            if s["file"] == path and not s.get("synthetic")]
-    touched = []
-    for s in syms:
-        lo, hi = s["lines"][0], s["lines"][1]
-        if any(not (hi < r0 or lo > r1) for r0, r1 in ranges):
-            touched.append(s)
-    return touched
+    points = sorted(set(points))
+    out = [[points[0], points[0]]]
+    for p in points[1:]:
+        if p == out[-1][1] + 1:
+            out[-1][1] = p
+        else:
+            out.append([p, p])
+    return out
+
+
+def _read_file(root: str | None, path: str) -> str:
+    if root is None:
+        return ""
+    p = os.path.join(root, path)
+    try:
+        with open(p, encoding="utf-8") as fh:
+            return fh.read()
+    except OSError:
+        return ""
 
 
 def verify(graph: dict, node: dict, diff_text: str,
            original_dir: str | None = None) -> dict:
-    """Проверить дифф против границы узла. Возвращает вердикт + нарушения.
+    """Проверить кумулятивный дифф против границы узла.
 
-    Проверка механическая, до символов, без LLM:
-
-    * путь вне ``allow_write`` -> ``outside_node_zone``;
-    * изменённый символ чужого узла в смешанном файле зоны ->
-      ``foreign_symbol_in_shared_file``;
-    * изменённая сигнатура контрактного (shared) символа ->
-      ``contract_signature_changed``.
-
-    ``unresolved``/``complete`` — неполнота графа: нерезолвленные импорты
-    могли скрыть часть затронутого.
+    ``original_dir`` — корень worktree (уже содержит новую сторону диффа).
     """
     bnd = model.boundary(graph, node)
     owners = model.file_owner_map(graph)
-    sym_by_id = {s["id"]: s for s in graph["symbols"]}
-    contracts = {c["symbol"]: c for c in model.contract_symbols(graph)}
+    base_syms = {s["id"]: s for s in graph["symbols"]
+                 if not s.get("synthetic")}
 
     violations = []
+    unattributed = []
     changed_paths = set()
 
     for f in _parse_diff(diff_text):
@@ -192,53 +184,61 @@ def verify(graph: dict, node: dict, diff_text: str,
             })
             continue
 
-        # Файл в зоне: разбор до символов.
-        ranges = _changed_line_ranges(f["hunks"])
-        touched = _touched_symbols(graph, path, ranges)
-        if not touched:
-            continue
+        new_text = _read_file(original_dir, path)
+        new_syms = _extract_file_symbols(path, new_text)
+        added, removed = _hunk_line_ranges(f["hunks"])
 
-        new_text = None
-        for s in touched:
-            if s["node"] != node["name"]:
+        base_in_file = {sid: s for sid, s in base_syms.items()
+                        if s["file"] == path}
+
+        # 1. Удалённый символ чужого узла (нет в новой стороне).
+        for sid, base in base_in_file.items():
+            if sid not in new_syms and base["node"] != node["name"]:
                 violations.append({
-                    "symbol": s["id"],
-                    "path": path,
+                    "symbol": sid, "path": path,
                     "reason": "foreign_symbol_in_shared_file",
-                    "owner": s["node"],
+                    "owner": base["node"],
                 })
-                continue
-            if s["id"] in contracts:
-                # Сигнатура контракта: реконструируем новое содержимое один раз.
-                if new_text is None:
-                    new_text = _apply_diff(
-                        _read_original(original_dir, path), f["hunks"])
-                    local_sigs = _local_signatures(new_text)
-                local = s["id"][len(_module_id(path)) + 1:] \
-                    if s["id"].startswith(_module_id(path) + ".") else s["id"]
-                if model.signature_hash(local_sigs.get(local)) \
-                        != contracts[s["id"]]["signature_hash"]:
-                    violations.append({
-                        "symbol": s["id"],
-                        "reason": "contract_signature_changed",
-                    })
 
-    return {
+        # 2. Изменённый символ (сигнатура или тело).
+        for sid, ns in new_syms.items():
+            base = base_in_file.get(sid)
+            if base is None:
+                continue  # новый символ — код самого узла
+            sig_changed = model.signature_hash(ns["sig"]) \
+                != model.signature_hash(base["sig"])
+            body_touched = _overlaps_lines(ns["lines"], added) \
+                or _overlaps_lines(base["lines"], removed)
+            if base["node"] != node["name"] and (sig_changed or body_touched):
+                violations.append({
+                    "symbol": sid, "path": path,
+                    "reason": "foreign_symbol_in_shared_file",
+                    "owner": base["node"],
+                })
+            elif base["node"] == node["name"] and base.get("shared") \
+                    and sig_changed:
+                violations.append({
+                    "symbol": sid,
+                    "reason": "contract_signature_changed",
+                })
+
+        # 3. Изменённые строки, не приписанные существующему символу:
+        #    новые символы (нет базового владельца) и код вне символов.
+        attributed = [ns["lines"] for sid, ns in new_syms.items()
+                      if sid in base_in_file]
+        uncovered = [p for p in added
+                     if not any(lo <= p <= hi for lo, hi in attributed)]
+        if uncovered:
+            unattributed.append({"path": path,
+                                 "lines": _collapse_points(uncovered)})
+
+    result = {
         "schema_version": "1",
         "ok": not violations,
         "changed": sorted(changed_paths),
         "violations": violations,
+        "unattributed_change": unattributed,
         "unresolved": model.unresolved_imports(graph),
         "complete": not model.graph_incomplete(graph),
     }
-
-
-def _read_original(root: str | None, path: str) -> str:
-    if root is None:
-        return ""
-    p = os.path.join(root, path)
-    try:
-        with open(p, encoding="utf-8") as fh:
-            return fh.read()
-    except OSError:
-        return ""
+    return result

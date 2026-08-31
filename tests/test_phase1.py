@@ -95,17 +95,41 @@ def test_verify_foreign_file_is_violation(graph):
                v["path"] == "billing/invoice.py" for v in r["violations"])
 
 
-def test_verify_in_zone_no_change_is_ok(graph):
+def _write_new(tmp_path, path, content):
+    p = tmp_path / path
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(content, encoding="utf-8")
+
+
+def test_verify_in_zone_no_change_is_ok(graph, tmp_path):
+    _write_new(tmp_path, "auth/login.py", (
+        "from .tokens import issue\n"
+        "from common import utils\n\n\n"
+        "def verify_token(t: str) -> bool:\n"
+        "    \"\"\"Проверяет токен.\"\"\"\n"
+        "    return len(t) > 0\n\n\n"
+        "def login(username: str, password: str) -> str:\n"
+        "    \"\"\"Логинит пользователя и возвращает токен.\"\"\"\n"
+        "    name = utils.normalize(username)\n"
+        "    return issue(len(name) + 0)\n"))
     diff = ("diff --git a/auth/login.py b/auth/login.py\n"
             "--- a/auth/login.py\n"
             "+++ b/auth/login.py\n"
             "@@ -10,1 +10,1 @@\n-    return issue(len(name))\n+    return issue(len(name) + 0)\n")
     node = model.node_by_ref(graph, "auth")
-    r = verify.verify(graph, node, diff, original_dir=FIXTURE)
+    r = verify.verify(graph, node, diff, original_dir=str(tmp_path))
     assert r["ok"] is True
 
 
-def test_verify_contract_signature_change_is_violation(graph):
+def test_verify_contract_signature_change_is_violation(graph, tmp_path):
+    _write_new(tmp_path, "common/utils.py", (
+        "import os\n\n"
+        "CACHE = {}\n\n\n"
+        "def hash_value(v: str, salt: str = \"\") -> str:\n"
+        "    \"\"\"Хеширует значение.\"\"\"\n"
+        "    return str(len(v))\n\n\n"
+        "def normalize(s: str) -> str:\n"
+        "    return s.strip().lower()\n"))
     diff = ("diff --git a/common/utils.py b/common/utils.py\n"
             "--- a/common/utils.py\n"
             "+++ b/common/utils.py\n"
@@ -113,7 +137,7 @@ def test_verify_contract_signature_change_is_violation(graph):
             "-def hash_value(v: str) -> str:\n"
             "+def hash_value(v: str, salt: str = \"\") -> str:\n")
     node = model.node_by_ref(graph, "common")  # владеет common/utils.py
-    r = verify.verify(graph, node, diff, original_dir=FIXTURE)
+    r = verify.verify(graph, node, diff, original_dir=str(tmp_path))
     assert r["ok"] is False
     assert any(v["reason"] == "contract_signature_changed" and
                v["symbol"] == "common.utils.hash_value" for v in r["violations"])
