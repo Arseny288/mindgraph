@@ -180,8 +180,9 @@
     color: var(--ink-soft); font-size: 15px; flex-direction: column; gap: 8px; }
   .canvas, .react-flow { width: 100%; height: 100%; background: var(--paper); }
   .react-flow__node { transition: opacity 200ms ease; pointer-events: auto !important; }
-  .canvas:has(.react-flow__node:hover) .react-flow__node:not(:hover) { opacity: .2; }
-  .canvas.has-selection:not(:has(.react-flow__node:hover)) .react-flow__node:not(.is-selected) { opacity: .45; }
+  /* item 2: opacity dims exactly one thing — an out-of-scope card
+     (.node-dimmed, below). Hover/selection used to also dim every other
+     card via :has(); that made active cards look washed out too. Removed. */
 
   @keyframes cascade-in { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: scale(1); } }
   .node-card-wrap { height: 100%; display: flex; flex-direction: column;
@@ -189,7 +190,7 @@
   .node-eyebrow { flex: 0 0 auto; padding-left: 6px; margin-bottom: 4px; font-size: 9px;
     letter-spacing: 0.14em; text-transform: none; color: var(--stripe, var(--ink-soft)); line-height: 1; }
   .node-card { flex: 1 1 auto; min-height: 0; position: relative; display: flex; flex-direction: column;
-    justify-content: center; background: var(--surface)fff; border: 1px solid rgba(0,0,0,0.05);
+    justify-content: center; background: var(--surface); border: 1px solid rgba(0,0,0,0.05);
     border-left: 3px solid var(--stripe); border-radius: 8px; padding: 8px 14px;
     box-shadow: 0 1px 2px rgba(0,0,0,0.05); cursor: pointer; }
   .node-card:hover { box-shadow: 0 2px 6px rgba(0,0,0,0.08); }
@@ -214,7 +215,6 @@
   .node-card.node-state-ok { outline: 2px solid var(--ok); outline-offset: 2px; }
   .node-card.node-state-failed { outline: 2px solid var(--fail); outline-offset: 2px; }
   .node-card.node-state-unverified { outline: 2px solid var(--warn); outline-offset: 2px; }
-  .node-card-wrap.node-dimmed { opacity: 0.35; }
   .node-card.node-denied { outline: 2px solid var(--fail); outline-offset: 2px; animation: denied-pop 600ms ease-out; }
   @keyframes denied-pop { from { transform: scale(1.03); } to { transform: scale(1); } }
   .react-flow__edge.denial-edge { animation: denial-edge-fade 600ms ease-out forwards; }
