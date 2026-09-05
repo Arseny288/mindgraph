@@ -1051,6 +1051,13 @@ function App() {
     setTaskText("");
   }, [taskText, scopeNodeId, post]);
 
+  // item 6: the failed-turn error in the feed gets a Retry — resubmits that
+  // turn's own prompt/scope as a fresh plan (not whatever's in the composer).
+  const retryTurn = useCallback((session) => {
+    setAppliedOnce(false);
+    post("/api/plan", { scope_node_id: session.scope_node_id || null, prompt: session.prompt || "" });
+  }, [post]);
+
   const runPlan = useCallback((sid, scopeOverride) => {
     const s = sessions.find((x) => x.id === sid);
     const node = scopeOverride || scopeNodeId || (s?.plan?.nodes?.length === 1 ? s.plan.nodes[0] : null);
@@ -1206,9 +1213,11 @@ function App() {
           h("span", { key: "l", style: { writingMode: "vertical-rl", fontSize: 12 } }, activeName || "studio"),
           blockedCount > 0 && h("span", { key: "u", className: "rail-unread" }, blockedCount),
         ]),
+        // item 6: title left, collapse chevron right, nothing else — the
+        // blocked-refusals count moved off the header (each refusal already
+        // renders inline, in red, at the trace line itself).
         h("div", { key: "head", className: "rail-head" }, [
           h("div", { className: "rail-title" }, "Conversation"),
-          blockedCount > 0 && h("span", { className: "rail-blocked", title: "refusals this session" }, `blocked: ${blockedCount}`),
           h("button", { className: "rail-collapse", onClick: () => setRailCollapsed((v) => !v), "aria-label": "collapse", title: "Collapse (Ctrl/Cmd+B)" }, "›"),
         ]),
         h("div", { key: "turns", className: "turns", ref: turnsRef },
@@ -1223,6 +1232,7 @@ function App() {
                 onApply: () => applyTurn(s.id),
                 onDiscard: () => discardTurn(s.id),
                 onDiffSeen: () => setDiffReady((prev) => ({ ...prev, [s.id]: true })),
+                onRetry: retryTurn,
               }))),
         h(Composer, {
           key: "composer",
@@ -1521,7 +1531,7 @@ function DiffView({ sessionId, onSeen }) {
   ]);
 }
 
-function Turn({ session, graph, nodeById, isLast, onChip, onRun, onStop, onApply, onDiscard, onDiffSeen, showScopeMeta }) {
+function Turn({ session, graph, nodeById, isLast, onChip, onRun, onStop, onApply, onDiscard, onDiffSeen, onRetry, showScopeMeta }) {
   const st = session.state;
   const plan = session.plan;
   const verdict = session.verdict;
@@ -1557,7 +1567,12 @@ function Turn({ session, graph, nodeById, isLast, onChip, onRun, onStop, onApply
       planBlocked, nodeNameOf, onChip, onNodeTag,
     })),
 
-    session.error && h("div", { key: "err", className: "turn-error" }, session.error),
+    // item 6: the one place a failed turn's error shows — was also
+    // duplicated under the composer; that copy is gone, this one gets Retry.
+    session.error && h("div", { key: "err", className: "turn-error" }, [
+      h("span", { key: "t" }, session.error),
+      h("button", { key: "r", className: "btn small turn-retry", onClick: () => onRetry(session) }, "Retry"),
+    ]),
 
     // verdict + actions (review). Actions for the latest turn live in the
     // composer's single slot; older turns keep their own quiet buttons.
@@ -1682,9 +1697,9 @@ function Composer({ model, mode, setMode, agentLabel, scopeName, nodeNameOf,
   }
 
   // --- input: Plan/Build modes, one accent per mode -------------------------
-  const note = (st === "failed" && lastSession?.error)
-    ? lastSession.error
-    : st === "applied"
+  // A failed session's error already renders in the feed (turn-error, with
+  // Retry) — item 6 drops the duplicate that used to also show here.
+  const note = st === "applied"
       ? "Applied — the changes are in the working tree; the graph rebuilds below."
       : (st === "aborted" || (st === "review" && model.appliedOnce))
         ? "Session closed — describe the next change."
@@ -1692,17 +1707,26 @@ function Composer({ model, mode, setMode, agentLabel, scopeName, nodeNameOf,
           ? "Plan discarded — describe the next change."
           : null;
   const pendingPlan = !!plan;
+  // item 6: one rounded container (input on top, a plain control row below,
+  // inside the same box) — no pills, no borders on the scope/attach
+  // affordances; the send icon is the one filled element, and only once
+  // there's something to send.
   return h("div", { className: "composer" }, [
-    h("div", { key: "row", className: "composer-row" }, [
-      h("div", { key: "scope", className: "composer-scope", title: "Esc clears scope", onClick: onScopeClear },
-        scopeName || "Whole project"),
+    h("div", { key: "box", className: "composer-box" }, [
       h("textarea", {
         ref: taRef, className: "composer-input", rows: 1,
-        placeholder: scopeName ? `Describe a change to ${scopeName}` : "Describe a change to the project…",
+        placeholder: "Describe a change…",
         value: taskText, disabled: !canType, onChange: onInput, onKeyDown,
       }),
-      h("button", { key: "send", className: "btn primary composer-cta", disabled: !canType || !taskText.trim(),
-        onClick: onSend }, "Plan"),
+      h("div", { key: "controls", className: "composer-controls" }, [
+        h("button", { key: "scope", className: "composer-scope-btn", title: "Esc clears scope", onClick: onScopeClear },
+          (scopeName || "Whole project") + " ⌄"),
+        h("button", { key: "attach", className: "composer-attach", "aria-label": "Attach", title: "Attach" }, "📎"),
+        h("button", {
+          key: "send", className: "composer-send" + (taskText.trim() ? " filled" : ""),
+          disabled: !canType || !taskText.trim(), onClick: onSend, "aria-label": "Send", title: "Send",
+        }, "↑"),
+      ]),
     ]),
     note && h("div", { key: "note", className: "composer-note" }, note),
     pendingPlan && h("div", { key: "hint", className: "composer-note" },
