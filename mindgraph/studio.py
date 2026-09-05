@@ -39,7 +39,7 @@ import time
 import uuid
 import webbrowser
 
-from .serve import viewer_dir
+from .serve import spa_fallback, viewer_dir
 
 # Session states (STUDIO.md §3).
 STATE_IDLE = "idle"
@@ -933,6 +933,8 @@ def _make_handler(repo_root: str):
                 self.api_layout_get()
             elif path == "/api/sessions":
                 self.api_sessions()
+            elif spa_fallback(self):
+                return
             else:
                 super().do_GET()
 

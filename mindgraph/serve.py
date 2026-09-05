@@ -34,6 +34,36 @@ def viewer_dir() -> str:
     return os.fspath(importlib.resources.as_file(traversable).__enter__())
 
 
+def spa_fallback(handler: http.server.BaseHTTPRequestHandler) -> bool:
+    """SPA fallback for a client-side route (deep links surviving reload/direct
+    paste — see main.jsx's history.pushState navigation): if the request's
+    path doesn't resolve to a REAL file on disk and doesn't look like an
+    asset request (no extension on its last segment — .js/.css/.json/fonts/
+    images all keep their normal, genuine-404-on-missing behaviour), serve
+    index.html with 200 instead of a bare 404. Returns True if it served the
+    fallback (caller should stop and not also call the normal handler).
+    """
+    path = handler.path.split("?", 1)[0]
+    fs_path = handler.translate_path(path)
+    if os.path.isfile(fs_path):
+        return False  # a real file — let the normal handler serve it
+    ext = os.path.splitext(os.path.basename(path.rstrip("/")))[1]
+    if ext:
+        return False  # looks like an asset request — a real 404 is correct
+    index_path = os.path.join(handler.directory, "index.html")
+    try:
+        with open(index_path, "rb") as f:
+            body = f.read()
+    except OSError:
+        return False
+    handler.send_response(200)
+    handler.send_header("Content-Type", "text/html; charset=utf-8")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+    return True
+
+
 def _make_handler(repo_root: str):
     graph_file = os.path.join(repo_root, ".mindgraph", "graph.json")
 
@@ -51,6 +81,11 @@ def _make_handler(repo_root: str):
             if path.split("?", 1)[0] == "/graph.json":
                 return graph_file
             return super().translate_path(path)
+
+        def do_GET(self):
+            if spa_fallback(self):
+                return
+            super().do_GET()
 
         def log_message(self, fmt, *args):
             pass  # quiet — don't spam the console for every static file
