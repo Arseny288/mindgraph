@@ -7,7 +7,7 @@
 import React, { useEffect, useMemo, useState, useCallback, useRef, useLayoutEffect } from "react";
 import { createRoot } from "react-dom/client";
 import ReactFlow, {
-  applyNodeChanges, Background, Controls, MarkerType,
+  applyNodeChanges, Background, MarkerType,
 } from "reactflow";
 import dagre from "dagre";
 import { marked } from "marked";
@@ -1056,10 +1056,10 @@ function App() {
     ? (nodeById[s.scope_node_id]?.name || s.scope_node_id) : "Whole project";
 
   return h("div", { className: "app-root", style: { "--rail-width": railWidth + "px" } }, [
-    // 56px header: repo name (mono) left, theme toggle right, nothing else.
+    // 56px header: the repo identity lives in the canvas overlay now (item 3,
+    // directly above the control group) — the header itself just carries the
+    // right-side controls (theme, later the settings menu).
     h("header", { key: "top", className: "topbar" }, [
-      h("button", { key: "repo", className: "topbar-repo", title: "Go to the top view",
-        onClick: goToRoot }, graph.repo.name || graph.repo.root || "repo"),
       h("div", { key: "right", className: "topbar-right" }, [
         h("button", {
           key: "theme", className: "topbar-btn theme-toggle",
@@ -1087,12 +1087,22 @@ function App() {
             elementsSelectable: false, onNodesChange, onNodeDragStop,
           }, [
             h(Background, { variant: "dots", gap: 30, size: 2.2, color: cssVar("--canvas-dot", "#CFCCC5") }),
-            h(Controls, { position: "bottom-left", showInteractive: false, fitViewOptions: FIT_OPTS }),
           ]),
         ]),
-        h(EdgesToggle, { show: showAllEdges, onToggle: () => setShowAllEdges((v) => !v) }),
-        h("button", { key: "reset", className: "reset-layout", onClick: resetLayout, title: "Reset layout",
-          "aria-label": "Reset layout" }, "↺"),
+        // item 3: one control group, top-left, positioned against the canvas
+        // container (never the viewport) — the repo identity/breadcrumb row
+        // sits directly above it, left-aligned to the same x.
+        h("div", { key: "chrome", className: "canvas-chrome" }, [
+          h(Breadcrumbs, { key: "crumbs", items: [graph.repo.name || graph.repo.root || "repo"], onCrumb: goToRoot }),
+          h(CanvasControls, {
+            key: "controls",
+            onReset: resetLayout,
+            showAllEdges, onToggleEdges: () => setShowAllEdges((v) => !v),
+            onZoomIn: () => rfInstance?.zoomIn({ duration: 150 }),
+            onZoomOut: () => rfInstance?.zoomOut({ duration: 150 }),
+            onFit: () => rfInstance?.fitView(FIT_OPTS),
+          }),
+        ]),
         popoverData && h(NodePopover, {
           key: "insp-" + selectedId, data: popoverData, avoidRect: clickRect,
           onClose: () => { setSelectedId(null); setScopeNodeId(null); setClickRect(null); },
@@ -1145,15 +1155,29 @@ function App() {
   ]);
 }
 
-function Breadcrumbs({ items }) {
-  const children = [h("span", { key: "c0", className: "crumb" }, items[0])];
+// items[0] is the repo root (always present, clickable via onCrumb — item 5
+// extends this with the drill path: one clickable segment per level).
+function Breadcrumbs({ items, onCrumb }) {
+  const children = [];
+  items.forEach((it, i) => {
+    if (i > 0) children.push(h("span", { key: "sep" + i, className: "crumb-sep" }, "/"));
+    children.push(h("span", { key: "c" + i, className: "crumb", onClick: onCrumb }, it));
+  });
   return h("div", { className: "breadcrumbs" }, children);
 }
 
-function EdgesToggle({ show, onToggle }) {
-  return h("button", { className: "edges-toggle" + (show ? " active" : ""),
-    onClick: onToggle, title: "Show all connections",
-    "aria-label": "Show all connections" }, "⇄");
+// One control group, top-left of the canvas: reset | edges | divider | zoom
+// in | zoom out | fit — a single row, shared container, 32px square buttons.
+function CanvasControls({ onReset, showAllEdges, onToggleEdges, onZoomIn, onZoomOut, onFit }) {
+  return h("div", { className: "canvas-controls" }, [
+    h("button", { key: "reset", onClick: onReset, title: "Reset layout", "aria-label": "Reset layout" }, "↺"),
+    h("button", { key: "edges", className: showAllEdges ? "active" : "", onClick: onToggleEdges,
+      title: "Show all connections", "aria-label": "Show all connections" }, "⇄"),
+    h("div", { key: "div", className: "canvas-controls-divider" }),
+    h("button", { key: "zi", onClick: onZoomIn, title: "Zoom in", "aria-label": "Zoom in" }, "+"),
+    h("button", { key: "zo", onClick: onZoomOut, title: "Zoom out", "aria-label": "Zoom out" }, "−"),
+    h("button", { key: "fit", onClick: onFit, title: "Fit to view", "aria-label": "Fit to view" }, "⤢"),
+  ]);
 }
 
 function VerdictBadge({ state }) {

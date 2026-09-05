@@ -235,20 +235,21 @@
   .node-badge .badge-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
   .node-incomplete { position: absolute; bottom: 6px; right: 8px; font-size: 9px; color: var(--ink-soft); }
 
-  /* --- chrome --- */
-  .breadcrumbs { position: absolute; top: 14px; left: 14px; z-index: 5; display: flex; align-items: center;
-    gap: 6px; font-size: 12px; color: var(--ink-soft); }
+  /* --- chrome (item 3: one positioned overlay, identity row above controls) --- */
+  .canvas-chrome { position: absolute; top: 14px; left: 14px; z-index: 5;
+    display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
+  .breadcrumbs { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-soft); }
   .crumb { cursor: pointer; color: var(--ink); }
   .crumb:hover { text-decoration: underline; }
   .crumb-sep { color: var(--ink-3); }
-  .edges-toggle { position: absolute; right: 14px; bottom: 14px; z-index: 5; border: 1px solid var(--line);
-    border-radius: 999px; background: rgba(255,255,255,0.9); color: var(--ink-soft); font-size: 12px;
-    padding: 7px 14px; cursor: pointer; box-shadow: 0 2px 10px rgba(0,0,0,0.05); font-family: inherit; }
-  .edges-toggle:hover, .edges-toggle.active { color: var(--ink); border-color: rgba(0,0,0,0.15); }
-  .reset-layout { position: absolute; right: 14px; bottom: 52px; z-index: 5; border: 1px solid var(--line);
-    border-radius: 999px; background: rgba(255,255,255,0.9); color: var(--ink-soft); font-size: 12px;
-    padding: 7px 14px; cursor: pointer; box-shadow: 0 2px 10px rgba(0,0,0,0.05); font-family: inherit; }
-  .reset-layout:hover { color: var(--ink); border-color: rgba(0,0,0,0.15); }
+  .canvas-controls { display: flex; align-items: center; gap: 4px; background: var(--surface);
+    border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--sh-flat); padding: 4px; }
+  .canvas-controls button { width: 32px; height: 32px; display: inline-flex; align-items: center;
+    justify-content: center; border: none; background: transparent; border-radius: 7px;
+    color: var(--ink-2); cursor: pointer; font-size: 15px; font-family: inherit; padding: 0; }
+  .canvas-controls button:hover { background: var(--surface-2); color: var(--ink); }
+  .canvas-controls button.active { color: var(--brand); }
+  .canvas-controls-divider { width: 1px; height: 20px; background: var(--line-strong); margin: 0 2px; }
 
   /* --- left node popover --- */
   .node-popover { position: absolute; right: 16px; top: 60px; left: auto; width: 320px; max-height: calc(100% - 90px);
@@ -348,8 +349,6 @@
   .composer-reason { font-size: 11px; color: var(--ink-soft); padding: 0 2px; }
   .composer-reason.blocked { color: var(--fail); font-weight: 600; }
 
-  .react-flow__controls { box-shadow: 0 2px 10px rgba(0,0,0,0.08); }
-  .react-flow__controls-button { border: none; }
 
   /* ================= rail rebuild (last prompt: document surface + composer modes) ===== */
 
@@ -686,15 +685,8 @@ body {
 .md code:not(.hljs) { color: var(--ink); }
 .md pre.code-block code { text-decoration: none; }
 
-/* ============ step 8: canvas controls grouped with zoom ============ */
-.edges-toggle, .reset-layout { width: 30px; height: 30px; padding: 0; border-radius: var(--r-sm);
-  font-size: 15px; line-height: 1; display: inline-flex; align-items: center; justify-content: center;
-  left: 10px; right: auto; background: var(--surface); color: var(--ink-2);
-  border: 1px solid var(--line); box-shadow: var(--sh-flat); }
-.edges-toggle { bottom: 104px; }
-.edges-toggle.active { color: var(--brand); border-color: var(--brand); }
-.reset-layout { bottom: 140px; }
-.edges-toggle:hover, .reset-layout:hover { color: var(--ink); }
+/* item 3's canvas-controls group (top-left) replaces this bottom-left pair —
+   see the "chrome" rules above. */
 
 /* collapsed rail: vertical label + unread counter */
 .rail-strip { position: relative; }
