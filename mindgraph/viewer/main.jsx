@@ -660,17 +660,64 @@ function App() {
     });
   }, []);
 
+  // --- browser history: the drill path is real navigation (item 5) ---------
+  // Each level change pushes {layer, domainId, nodeId} plus a readable URL
+  // (repo/Domain/Node); Back/Forward restore it via popstate. The ref stops
+  // the push-effect from re-pushing the very state popstate just applied.
+  const fromPopRef = useRef(false);
+  const mountedRef = useRef(false);
+  useEffect(() => {
+    function onPop(e) {
+      fromPopRef.current = true;
+      const st = e.state || {};
+      setSelectedId(null); setScopeNodeId(null); setClickRect(null);
+      setDomainId(st.domainId || null);
+      setNodeId(st.nodeId || null);
+      setLayer(st.layer ?? LAYER_DOMAIN);
+    }
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+  useEffect(() => {
+    if (!graph) return undefined;
+    if (fromPopRef.current) { fromPopRef.current = false; return undefined; }
+    const segs = [graph.repo.name || graph.repo.root || "repo"];
+    if (domainId && domainById[domainId]) segs.push(domainById[domainId].name);
+    if (nodeId && nodeById[nodeId]) segs.push(nodeById[nodeId].name);
+    const url = "/" + segs.map(encodeURIComponent).join("/");
+    const state = { layer, domainId, nodeId };
+    if (!mountedRef.current) { mountedRef.current = true; history.replaceState(state, "", url); return undefined; }
+    if (location.pathname !== url) history.pushState(state, "", url);
+    return undefined;
+  }, [graph, layer, domainId, nodeId, domainById, nodeById]);
+
+  // Drilling into an empty node/domain would show an empty canvas instead —
+  // show a brief inline hint at the clicked card and do nothing else.
+  const [emptyHint, setEmptyHint] = useState(null); // {rect, text}
+  const showEmptyHint = useCallback((rect, text) => {
+    setEmptyHint({ rect, text });
+    setTimeout(() => setEmptyHint((cur) => (cur && cur.rect === rect ? null : cur)), 1600);
+  }, []);
+
   // --- keyboard ---
   useEffect(() => {
     function onKey(e) {
       const mod = e.metaKey || e.ctrlKey;
+      const tag = document.activeElement?.tagName;
+      const typing = tag === "INPUT" || tag === "TEXTAREA";
       if (mod && e.key.toLowerCase() === "b") { e.preventDefault(); setRailCollapsed((v) => !v); }
-      else if (e.key === "Escape") { setSelectedId(null); setScopeNodeId(null); }
+      else if (e.key === "Escape") {
+        // Esc closes whatever's open first (selection/popover); only once
+        // nothing is selected does it act as "go up a level" (item 5).
+        if (selectedId) { setSelectedId(null); setScopeNodeId(null); setClickRect(null); }
+        else if (layer !== LAYER_DOMAIN) goUp();
+      }
+      else if (e.key === "Backspace" && !typing && layer !== LAYER_DOMAIN) { e.preventDefault(); goUp(); }
       else if (e.key === "1") rfRef.current?.fitView(FIT_OPTS);
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [selectedId, layer, goUp]);
 
   // --- fitView after the layout pass, once nodes carry measured dimensions ---
   // Keyed on the actual node count of the CURRENT React Flow state (not just
@@ -720,7 +767,10 @@ function App() {
           size: st.symbols,
           tooltip: `${en(st.nodeCount, "node")} · ${en(files, "file")} · ${en(st.symbols, "symbol")}`,
           onClick: (e) => { setSelectedId(d.id); setClickRect(e.currentTarget.getBoundingClientRect()); },
-          onDoubleClick: () => goToDomain(d.id),
+          onDoubleClick: (e) => {
+            if (st.nodeCount === 0) { showEmptyHint(e.currentTarget.getBoundingClientRect(), "Nothing inside this domain yet"); return; }
+            goToDomain(d.id);
+          },
         };
       });
       return finish(items, graph.domain_edges || [], (id) => colorForName(domainById[id]?.name || id), DOMAIN_W, CARD_H);
@@ -741,7 +791,10 @@ function App() {
             ? "symbols not assigned to any area — name this area to claim them"
             : `${en(n.files.length, "file")} · ${en(n.symbols.length, "symbol")}`,
           onClick: (e) => { setSelectedId(n.id); setScopeNodeId(n.id); setClickRect(e.currentTarget.getBoundingClientRect()); },
-          onDoubleClick: () => goToNode(n.id),
+          onDoubleClick: (e) => {
+            if (n.symbols.length === 0) { showEmptyHint(e.currentTarget.getBoundingClientRect(), "Nothing inside this node yet"); return; }
+            goToNode(n.id);
+          },
         };
       });
       const edges = graph.node_edges.filter((e) => idSet.has(e.from) && idSet.has(e.to));
@@ -762,7 +815,7 @@ function App() {
     }).filter(Boolean);
     const edges = graph.symbol_edges.filter((e) => symIds.has(e.from) && symIds.has(e.to));
     return finish(items, edges, () => color, SYMBOL_W, SYMBOL_H);
-  }, [graph, layer, domainId, nodeId, domainById, domainStats, nodeById, symbolById, colorOfNode, goToDomain, goToNode, locks, toggleLock]);
+  }, [graph, layer, domainId, nodeId, domainById, domainStats, nodeById, symbolById, colorOfNode, goToDomain, goToNode, locks, toggleLock, showEmptyHint]);
 
   // --- popover content: everything the popover shows is already loaded on the
   // client (graph.json) — no per-node fetch, no loading state, no cache. A
@@ -1064,6 +1117,18 @@ function App() {
     canType: !lastBusy && !lastPlanReady && !lastBlockedPlan && !(lastState === "review" && !appliedOnce),
   };
 
+  // item 5: the drill path as breadcrumbs — one clickable segment per level,
+  // rendered mono with "/" separators (item 3's identity row). Computed
+  // before the early returns below (Rules of Hooks: every render must call
+  // the same hooks in the same order, so this can't sit after them).
+  const pathSegments = useMemo(() => {
+    if (!graph) return [];
+    const segs = [{ label: graph.repo.name || graph.repo.root || "repo", onClick: goToRoot }];
+    if (domainId && domainById[domainId]) segs.push({ label: domainById[domainId].name, onClick: () => goToDomain(domainId) });
+    if (nodeId && nodeById[nodeId]) segs.push({ label: nodeById[nodeId].name, onClick: () => goToNode(nodeId) });
+    return segs;
+  }, [graph, domainId, nodeId, domainById, nodeById, goToRoot, goToDomain, goToNode]);
+
   if (error) return h("div", { className: "state-message" }, [h("div", { key: "m" }, error), h("div", { key: "h", style: { fontSize: 12 } }, "Then reload this page.")]);
   if (!graph) return h("div", { className: "state-message" }, "loading graph…");
 
@@ -1107,7 +1172,7 @@ function App() {
         // container (never the viewport) — the repo identity/breadcrumb row
         // sits directly above it, left-aligned to the same x.
         h("div", { key: "chrome", className: "canvas-chrome" }, [
-          h(Breadcrumbs, { key: "crumbs", items: [graph.repo.name || graph.repo.root || "repo"], onCrumb: goToRoot }),
+          h(Breadcrumbs, { key: "crumbs", segments: pathSegments }),
           h(CanvasControls, {
             key: "controls",
             onReset: resetLayout,
@@ -1117,6 +1182,13 @@ function App() {
             onFit: () => rfInstance?.fitView(FIT_OPTS),
           }),
         ]),
+        // item 5: a node/domain with no children doesn't drill into an empty
+        // canvas — just a brief hint at the card that was double-clicked.
+        // Fixed position: emptyHint.rect is viewport coordinates.
+        emptyHint && h("div", {
+          key: "hint", className: "empty-hint",
+          style: { left: emptyHint.rect.left + "px", top: (emptyHint.rect.bottom + 8) + "px" },
+        }, emptyHint.text),
         popoverData && h(NodePopover, {
           key: "insp-" + selectedId, data: popoverData, avoidRect: clickRect,
           onClose: () => { setSelectedId(null); setScopeNodeId(null); setClickRect(null); },
@@ -1171,13 +1243,15 @@ function App() {
 
 // items[0] is the repo root (always present, clickable via onCrumb — item 5
 // extends this with the drill path: one clickable segment per level).
-function Breadcrumbs({ items, onCrumb }) {
+// segments: [{label, onClick}], mono, "/"-separated — the last segment is the
+// current level (still clickable: a no-op back to itself, kept simple).
+function Breadcrumbs({ segments }) {
   const children = [];
-  items.forEach((it, i) => {
+  segments.forEach((seg, i) => {
     if (i > 0) children.push(h("span", { key: "sep" + i, className: "crumb-sep" }, "/"));
-    children.push(h("span", { key: "c" + i, className: "crumb", onClick: onCrumb }, it));
+    children.push(h("span", { key: "c" + i, className: "crumb", onClick: seg.onClick }, seg.label));
   });
-  return h("div", { className: "breadcrumbs" }, children);
+  return h("div", { className: "breadcrumbs mono" }, children);
 }
 
 // One control group, top-left of the canvas: reset | edges | divider | zoom

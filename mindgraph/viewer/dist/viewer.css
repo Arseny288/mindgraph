@@ -769,3 +769,8 @@ body, .app-root, .topbar, .topbar-btn, .canvas, .canvas-area, .rail, .rail-strip
   transition: background-color 220ms ease, color 220ms ease, border-color 220ms ease;
 }
 .no-transition, .no-transition * { transition: none !important; }
+
+/* ============ item 5: drill navigation ============ */
+.empty-hint { position: fixed; z-index: 20; background: var(--ink); color: var(--paper);
+  font-size: 11px; line-height: 1.4; white-space: nowrap; padding: 5px 9px; border-radius: 6px;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.18); pointer-events: none; }
