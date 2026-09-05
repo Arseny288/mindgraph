@@ -231,7 +231,7 @@
     font-size: 10px; font-weight: 600; padding: 1px 5px; border-radius: 999px; line-height: 1.4; }
   .node-badge.ok { background: rgba(78,139,132,0.16); color: var(--ok); }
   .node-badge.failed { background: rgba(184,86,90,0.16); color: var(--fail); }
-  .node-badge.unverified { background: rgba(201,154,46,0.18); color: #9a7a20; }
+  .node-badge.unverified { background: rgba(201,154,46,0.18); color: var(--warn); }
   .node-badge .badge-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
   .node-incomplete { position: absolute; bottom: 6px; right: 8px; font-size: 9px; color: var(--ink-soft); }
 
@@ -290,7 +290,7 @@
     font-size: 11px; text-transform: none; }
   .verdict-ok { background: rgba(78,139,132,0.15); color: var(--ok); }
   .verdict-failed { background: rgba(184,86,90,0.15); color: var(--fail); }
-  .verdict-unverified { background: rgba(201,154,46,0.18); color: #9a7a20; }
+  .verdict-unverified { background: rgba(201,154,46,0.18); color: var(--warn); }
 
   /* --- conversation rail --- */
   .rail-head { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 10px 14px;
@@ -433,7 +433,7 @@
     margin: 6px 0 3px; }
   .plan-list .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
     font-size: 11.5px; color: var(--ink); overflow-wrap: break-word; }
-  .plan-contract { color: #8e3a3e; }
+  .plan-contract { color: var(--fail); }
   .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
 
   .turn-blocked { color: var(--fail); font-weight: 600; font-size: 12px; margin-top: 8px; }
@@ -453,14 +453,14 @@
   .diff-file { margin: 6px 0; }
   .diff-file-head { display: flex; align-items: center; gap: 8px; font-size: 11px; }
   .diff-file-head .mono { color: var(--ink); }
-  .diff-status.new { font-size: 10px; color: #9a7a20; border: 1px solid rgba(201,154,46,0.4);
+  .diff-status.new { font-size: 10px; color: var(--warn); border: 1px solid rgba(201,154,46,0.4);
     border-radius: 999px; padding: 0 6px; }
   .patch { margin: 4px 0 0; background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px;
     padding: 4px 0; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
     font-size: 11px; overflow-x: auto; max-height: 280px; }
   .patch div { padding: 0 10px; white-space: pre; line-height: 1.5; }
-  .patch .add { background: rgba(78,139,132,0.12); color: #2e5c57; }
-  .patch .del { background: rgba(184,86,90,0.10); color: #8e3a3e; }
+  .patch .add { background: rgba(78,139,132,0.12); color: var(--ok); }
+  .patch .del { background: rgba(184,86,90,0.10); color: var(--fail); }
   .patch .hunk { color: var(--ink-soft); background: rgba(0,0,0,0.03); }
   .patch .meta { color: var(--ink-3); }
 
@@ -743,3 +743,29 @@ body {
 .pop-neighbors { font-size: 12px; color: var(--ink); line-height: 1.7; }
 .pop-neighbors-label { color: var(--ink-soft); }
 .node-popover .pop-action { width: 100%; margin-top: 16px; }
+
+/* ============ item 4: settings menu + theme transition ============ */
+.settings-menu-wrap { position: relative; }
+.settings-btn { font-size: 15px; line-height: 1; }
+.settings-menu { position: absolute; top: calc(100% + 6px); right: 0; z-index: 20; min-width: 190px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+  box-shadow: var(--sh-float); padding: 6px; }
+.settings-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 8px; }
+.settings-row-label { font-size: 12px; color: var(--ink-soft); }
+.settings-options { display: flex; gap: 2px; background: var(--surface-2); border-radius: 8px; padding: 2px; }
+.settings-option { border: none; background: transparent; color: var(--ink-2); font-size: 11px;
+  padding: 4px 8px; border-radius: 6px; cursor: pointer; font-family: inherit; }
+.settings-option.active { background: var(--surface); color: var(--ink); box-shadow: var(--sh-flat); }
+
+/* Suppressed on first paint (index.html adds/removes .no-transition on <html>)
+   so the app never fades in on load; prefers-reduced-motion is handled by the
+   global override at the top of this file (transition-duration: 0.001ms).
+   Deliberately NOT `*` — only the surfaces that actually carry theme colors,
+   and only background/text/border, never box-shadow or opacity. */
+body, .app-root, .topbar, .topbar-btn, .canvas, .canvas-area, .rail, .rail-strip,
+.node-card, .node-popover, .canvas-controls, .canvas-controls button,
+.composer, .composer-input, .name-input, .btn, .msg-user, .plan-panel,
+.patch, .reason-body, .settings-menu, .settings-option, .pop-chip {
+  transition: background-color 220ms ease, color 220ms ease, border-color 220ms ease;
+}
+.no-transition, .no-transition * { transition: none !important; }

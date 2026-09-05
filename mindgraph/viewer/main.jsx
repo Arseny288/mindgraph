@@ -510,10 +510,26 @@ function App() {
   const [agentLabel, setAgentLabel] = useState("deepseek-v4-flash");
   const [rebuilding, setRebuilding] = useState(false);
   const [appliedOnce, setAppliedOnce] = useState(false); // quiet "applied" note after Apply
-  const [theme, setTheme] = useState(() => {
-    try { return localStorage.getItem("mindvibe-theme") || "light"; }
-    catch { return "light"; }
+  // Theme: the stored CHOICE is "system" | "light" | "dark" (new installs
+  // default to "system"; an existing "light"/"dark" choice from before this
+  // setting existed is respected as-is). "system" tracks prefers-color-scheme
+  // live via a matchMedia listener, not just at load.
+  const [themeChoice, setThemeChoice] = useState(() => {
+    try { return localStorage.getItem("mindvibe-theme") || "system"; }
+    catch { return "system"; }
   });
+  const [systemDark, setSystemDark] = useState(() => {
+    try { return window.matchMedia("(prefers-color-scheme: dark)").matches; }
+    catch { return false; }
+  });
+  useEffect(() => {
+    let mq;
+    try { mq = window.matchMedia("(prefers-color-scheme: dark)"); } catch { return undefined; }
+    const onChange = (e) => setSystemDark(e.matches);
+    mq.addEventListener?.("change", onChange);
+    return () => mq.removeEventListener?.("change", onChange);
+  }, []);
+  const theme = themeChoice === "system" ? (systemDark ? "dark" : "light") : themeChoice;
   const [scopeNodeId, setScopeNodeId] = useState(null); // null = whole project
   const [railWidth, setRailWidth] = useState(420);
   const [railCollapsed, setRailCollapsed] = useState(false);
@@ -541,8 +557,10 @@ function App() {
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
-    try { localStorage.setItem("mindvibe-theme", theme); } catch { /* ignore */ }
   }, [theme]);
+  useEffect(() => {
+    try { localStorage.setItem("mindvibe-theme", themeChoice); } catch { /* ignore */ }
+  }, [themeChoice]);
 
   // --- load graph ---
   const loadGraph = useCallback(() => {
@@ -1058,15 +1076,11 @@ function App() {
   return h("div", { className: "app-root", style: { "--rail-width": railWidth + "px" } }, [
     // 56px header: the repo identity lives in the canvas overlay now (item 3,
     // directly above the control group) — the header itself just carries the
-    // right-side controls (theme, later the settings menu).
+    // right-side controls (item 4: a settings menu instead of a standalone
+    // theme toggle button).
     h("header", { key: "top", className: "topbar" }, [
       h("div", { key: "right", className: "topbar-right" }, [
-        h("button", {
-          key: "theme", className: "topbar-btn theme-toggle",
-          onClick: () => setTheme((t) => (t === "dark" ? "light" : "dark")),
-          "aria-label": "Toggle color theme",
-          title: theme === "dark" ? "Switch to light theme" : "Switch to dark theme",
-        }, theme === "dark" ? "Light theme" : "Dark theme"),
+        h(SettingsMenu, { key: "settings", themeChoice, onThemeChange: setThemeChoice }),
       ]),
     ]),
     h("div", { key: "body", className: "app-body",
@@ -1177,6 +1191,48 @@ function CanvasControls({ onReset, showAllEdges, onToggleEdges, onZoomIn, onZoom
     h("button", { key: "zi", onClick: onZoomIn, title: "Zoom in", "aria-label": "Zoom in" }, "+"),
     h("button", { key: "zo", onClick: onZoomOut, title: "Zoom out", "aria-label": "Zoom out" }, "−"),
     h("button", { key: "fit", onClick: onFit, title: "Fit to view", "aria-label": "Fit to view" }, "⤢"),
+  ]);
+}
+
+const THEME_OPTIONS = [["system", "System"], ["light", "Light"], ["dark", "Dark"]];
+
+// item 4: a settings icon opens a small popover menu, built as a LIST of rows
+// (one today — Theme) so future settings are additions, not a rewrite.
+function SettingsMenu({ themeChoice, onThemeChange }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onDoc = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    const onKey = (e) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", onDoc);
+    window.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("mousedown", onDoc); window.removeEventListener("keydown", onKey); };
+  }, [open]);
+
+  const rows = [
+    {
+      key: "theme", label: "Theme",
+      control: h("div", { className: "settings-options" },
+        THEME_OPTIONS.map(([val, label]) => h("button", {
+          key: val, className: "settings-option" + (themeChoice === val ? " active" : ""),
+          onClick: () => onThemeChange(val),
+        }, label))),
+    },
+    // future rows go here — same shape: { key, label, control }.
+  ];
+
+  return h("div", { ref, className: "settings-menu-wrap" }, [
+    h("button", {
+      key: "btn", className: "topbar-btn settings-btn", onClick: () => setOpen((v) => !v),
+      "aria-label": "Settings", title: "Settings",
+    }, "⚙"),
+    open && h("div", { key: "menu", className: "settings-menu" },
+      rows.map((r) => h("div", { key: r.key, className: "settings-row" }, [
+        h("div", { key: "l", className: "settings-row-label" }, r.label),
+        r.control,
+      ]))),
   ]);
 }
 
