@@ -235,14 +235,19 @@
   .node-badge .badge-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
   .node-incomplete { position: absolute; bottom: 6px; right: 8px; font-size: 9px; color: var(--ink-soft); }
 
-  /* --- chrome (item 3: one positioned overlay, identity row above controls) --- */
-  .canvas-chrome { position: absolute; top: 14px; left: 14px; z-index: 5;
-    display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
-  .breadcrumbs { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-soft); }
-  .crumb { cursor: pointer; color: var(--ink); }
+  /* --- chrome --- */
+  /* breadcrumbs: a shell element in the header now (fix 1) — mono, 13px,
+     vertically centered by .topbar's own flex, same 16px inset via the
+     header's padding. Not positioned here at all; it just flows in the row. */
+  .breadcrumbs { display: flex; align-items: center; gap: 6px;
+    font-family: var(--font-mono); font-size: 13px; color: var(--ink); min-width: 0; }
+  .crumb { cursor: pointer; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .crumb:hover { text-decoration: underline; }
-  .crumb-sep { color: var(--ink-3); }
-  .canvas-controls { display: flex; align-items: center; gap: 4px; background: var(--surface);
+  .crumb-sep { color: var(--ink-3); flex: 0 0 auto; }
+  /* control group: the canvas's own top-left corner now that the identity
+     row is gone from the overlay — 16px from both edges of .canvas-area. */
+  .canvas-controls { position: absolute; top: 16px; left: 16px; z-index: 5;
+    display: flex; align-items: center; gap: 4px; background: var(--surface);
     border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--sh-flat); padding: 4px; }
   .canvas-controls button { width: 32px; height: 32px; display: inline-flex; align-items: center;
     justify-content: center; border: none; background: transparent; border-radius: 7px;
@@ -535,10 +540,6 @@ body {
   padding: 0 16px; background: var(--canvas);
   border-bottom: 1px solid var(--line);
 }
-.topbar-repo {
-  font-family: var(--font-mono); font-size: 13px; font-weight: 500; color: var(--ink);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
 .topbar-right { margin-left: auto; display: flex; align-items: center; gap: 6px; }
 .topbar-btn {
   border: 1px solid var(--line); background: var(--surface); color: var(--ink-2);
@@ -778,6 +779,12 @@ body, .app-root, .topbar, .topbar-btn, .canvas, .canvas-area, .rail, .rail-strip
 .empty-hint { position: fixed; z-index: 20; background: var(--ink); color: var(--paper);
   font-size: 11px; line-height: 1.4; white-space: nowrap; padding: 5px 9px; border-radius: 6px;
   box-shadow: 0 4px 14px rgba(0,0,0,0.18); pointer-events: none; }
+
+/* fix 2c: an unknown/stale deep link falls back to root with this notice */
+.route-notice { position: absolute; top: 16px; left: 50%; transform: translateX(-50%); z-index: 20;
+  background: var(--ink); color: var(--paper); font-size: 12px; line-height: 1.4;
+  padding: 7px 14px; border-radius: 8px; box-shadow: 0 4px 14px rgba(0,0,0,0.18);
+  pointer-events: none; white-space: nowrap; }
 
 /* ============ item 6: composer — one rounded container, no pills ============ */
 .composer-box { background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px;

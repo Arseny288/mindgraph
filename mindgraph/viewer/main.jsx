@@ -660,6 +660,44 @@ function App() {
     });
   }, []);
 
+  // --- fix 2c: parse the URL into a level on cold load (reload / pasted
+  // deep link / no history.state at all) — BEFORE anything renders, so the
+  // user lands on the right level directly instead of seeing root first and
+  // then jumping. Gates the real UI below (state-message shows meanwhile)
+  // and gates the history-sync effect (next) so it can't overwrite the
+  // deep-linked URL with "/repo" before this has had a chance to resolve it.
+  const [initialPathResolved, setInitialPathResolved] = useState(false);
+  const [routeNotice, setRouteNotice] = useState(null);
+  useEffect(() => {
+    if (!graph || initialPathResolved) return;
+    // trailing slash resolves the same as without
+    const raw = location.pathname.replace(/\/+$/, "");
+    const parts = raw.split("/").filter(Boolean).map((s) => {
+      try { return decodeURIComponent(s); } catch { return s; } // stray % -> keep literal
+    });
+    let layerFound = LAYER_DOMAIN, domainFound = null, nodeFound = null, failed = false;
+    if (parts.length >= 2) {
+      const dom = graph.domains.find((d) => d.name === parts[1]);
+      if (!dom) {
+        failed = true;
+      } else {
+        domainFound = dom.id; layerFound = LAYER_FEATURE;
+        if (parts.length >= 3) {
+          const nd = graph.nodes.find((n) => n.parent === dom.id && n.name === parts[2]);
+          if (!nd) failed = true;
+          else { nodeFound = nd.id; layerFound = LAYER_SYMBOL; }
+        }
+      }
+    }
+    if (failed) {
+      layerFound = LAYER_DOMAIN; domainFound = null; nodeFound = null;
+      setRouteNotice("That page couldn't be found — showing the whole project.");
+      setTimeout(() => setRouteNotice(null), 4000);
+    }
+    setLayer(layerFound); setDomainId(domainFound); setNodeId(nodeFound);
+    setInitialPathResolved(true);
+  }, [graph, initialPathResolved]);
+
   // --- browser history: the drill path is real navigation (item 5) ---------
   // Each level change pushes {layer, domainId, nodeId} plus a readable URL
   // (repo/Domain/Node); Back/Forward restore it via popstate. The ref stops
@@ -679,7 +717,7 @@ function App() {
     return () => window.removeEventListener("popstate", onPop);
   }, []);
   useEffect(() => {
-    if (!graph) return undefined;
+    if (!graph || !initialPathResolved) return undefined;
     if (fromPopRef.current) { fromPopRef.current = false; return undefined; }
     const segs = [graph.repo.name || graph.repo.root || "repo"];
     if (domainId && domainById[domainId]) segs.push(domainById[domainId].name);
@@ -689,7 +727,7 @@ function App() {
     if (!mountedRef.current) { mountedRef.current = true; history.replaceState(state, "", url); return undefined; }
     if (location.pathname !== url) history.pushState(state, "", url);
     return undefined;
-  }, [graph, layer, domainId, nodeId, domainById, nodeById]);
+  }, [graph, initialPathResolved, layer, domainId, nodeId, domainById, nodeById]);
 
   // Drilling into an empty node/domain would show an empty canvas instead —
   // show a brief inline hint at the clicked card and do nothing else.
@@ -1137,7 +1175,10 @@ function App() {
   }, [graph, domainId, nodeId, domainById, nodeById, goToRoot, goToDomain, goToNode]);
 
   if (error) return h("div", { className: "state-message" }, [h("div", { key: "m" }, error), h("div", { key: "h", style: { fontSize: 12 } }, "Then reload this page.")]);
-  if (!graph) return h("div", { className: "state-message" }, "loading graph…");
+  // Gated on initialPathResolved too: without it the user would see the root
+  // graph render (and fit) for a frame before jumping to the deep-linked
+  // level — this keeps the neutral loading state up until landing directly.
+  if (!graph || !initialPathResolved) return h("div", { className: "state-message" }, "loading graph…");
 
   const activeName = current?.scope_node_id ? (nodeById[current.scope_node_id]?.name || "") : null;
   const blockedCount = (sessions[sessions.length - 1]?.events || []).filter((e) => (e.type === "tool_outcome" && e.refused) || (e.type === "verify_verdict" && e.ok === false)).length;
@@ -1146,11 +1187,11 @@ function App() {
     ? (nodeById[s.scope_node_id]?.name || s.scope_node_id) : "Whole project";
 
   return h("div", { className: "app-root", style: { "--rail-width": railWidth + "px" } }, [
-    // 56px header: the repo identity lives in the canvas overlay now (item 3,
-    // directly above the control group) — the header itself just carries the
-    // right-side controls (item 4: a settings menu instead of a standalone
-    // theme toggle button).
+    // 56px header: the repo/drill breadcrumb trail is a shell element now
+    // (left, mono, vertically centered — never a canvas overlay), freeing
+    // the canvas's top-left corner for the control group alone.
     h("header", { key: "top", className: "topbar" }, [
+      h(Breadcrumbs, { key: "crumbs", segments: pathSegments }),
       h("div", { key: "right", className: "topbar-right" }, [
         h(SettingsMenu, { key: "settings", themeChoice, onThemeChange: setThemeChoice }),
       ]),
@@ -1175,20 +1216,17 @@ function App() {
             h(Background, { variant: "dots", gap: 30, size: 2.2, color: cssVar("--canvas-dot", "#CFCCC5") }),
           ]),
         ]),
-        // item 3: one control group, top-left, positioned against the canvas
-        // container (never the viewport) — the repo identity/breadcrumb row
-        // sits directly above it, left-aligned to the same x.
-        h("div", { key: "chrome", className: "canvas-chrome" }, [
-          h(Breadcrumbs, { key: "crumbs", segments: pathSegments }),
-          h(CanvasControls, {
-            key: "controls",
-            onReset: resetLayout,
-            showAllEdges, onToggleEdges: () => setShowAllEdges((v) => !v),
-            onZoomIn: () => rfInstance?.zoomIn({ duration: 150 }),
-            onZoomOut: () => rfInstance?.zoomOut({ duration: 150 }),
-            onFit: () => rfInstance?.fitView(FIT_OPTS),
-          }),
-        ]),
+        // The breadcrumb trail moved to the header (a shell element, not a
+        // canvas overlay) — the control group alone now occupies the
+        // canvas's top-left corner, 16px from both edges.
+        h(CanvasControls, {
+          key: "controls",
+          onReset: resetLayout,
+          showAllEdges, onToggleEdges: () => setShowAllEdges((v) => !v),
+          onZoomIn: () => rfInstance?.zoomIn({ duration: 150 }),
+          onZoomOut: () => rfInstance?.zoomOut({ duration: 150 }),
+          onFit: () => rfInstance?.fitView(FIT_OPTS),
+        }),
         // item 5: a node/domain with no children doesn't drill into an empty
         // canvas — just a brief hint at the card that was double-clicked.
         // Fixed position: emptyHint.rect is viewport coordinates.
@@ -1196,6 +1234,9 @@ function App() {
           key: "hint", className: "empty-hint",
           style: { left: emptyHint.rect.left + "px", top: (emptyHint.rect.bottom + 8) + "px" },
         }, emptyHint.text),
+        // fix 2c: an unknown/stale deep link falls back to root — this is
+        // the brief notice, not a blank canvas or a crash.
+        routeNotice && h("div", { key: "route-notice", className: "route-notice" }, routeNotice),
         popoverData && h(NodePopover, {
           key: "insp-" + selectedId, data: popoverData, avoidRect: clickRect,
           onClose: () => { setSelectedId(null); setScopeNodeId(null); setClickRect(null); },
