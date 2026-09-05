@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import re
+from collections import Counter
 from datetime import datetime, timezone
 
 from .domains import assign_domains, UNASSIGNED_DOMAIN, _DOMAIN_SYSTEM_PROMPT
@@ -217,7 +218,10 @@ def build_graph(root: str, provider_name: str = "deepseek", no_llm: bool = False
                 cache_base=None,
                 entry_points=None,
                 node_min: int = 5, node_max: int = 15,
-                config_fingerprint: str | None = None) -> dict:
+                config_fingerprint: str | None = None,
+                generate_descriptions: bool = False,
+                existing_for_descriptions: dict | None = None,
+                regenerate_descriptions: bool = False) -> dict:
     """Extract -> (group) -> shared -> a single graph.json (in memory, without writing).
 
     If the LLM provider is unavailable (no key/package) and ``no_llm`` is not set
@@ -262,9 +266,67 @@ def build_graph(root: str, provider_name: str = "deepseek", no_llm: bool = False
         log.info("stage B: transferring the existing LLM layout (no model call)")
         preserved_node, preserved_summary, preserved_parent, preserved_domains = \
             _preserved_grouping(preserve_from)
+        # Deterministic additions on top of the preserved layout (README
+        # cache-first; STUDIO.md §10): the manifest's own_paths win mechanically,
+        # a symbol new since the last scan joins the node that owns its file, and
+        # everything still unclaimed lands in the "Unassigned" service node —
+        # new code never silently falls back to package-proxy names.
+        manifest_nodes = manifest.load(root)
+        pinned_sym = manifest.preassign(
+            [s for s in symbols if not s.get("synthetic")], manifest_nodes) \
+            if manifest_nodes else {}
+        old_id_name = {n.get("id"): n.get("name") for n in (preserve_from.get("nodes") or [])}
+        mn_by_id = {n["id"]: n for n in manifest_nodes}
+
+        def _manifest_node_name(nid):
+            """The graph name of a manifest node: its old name if the node was
+            already in the graph (identity by id), else its title."""
+            mn = mn_by_id.get(nid)
+            if mn is None:
+                return None
+            return old_id_name.get(nid) or mn["title"]
+
+        # The owning node of each file among symbols that WERE preserved.
+        file_owners: dict = {}
         for s in symbols:
-            node_of_symbol[s["id"]] = (
-                preserved_node.get(s["id"]) or node_of(s["file"], "package"))
+            if s["id"] in preserved_node:
+                file_owners.setdefault(s["file"], []).append(preserved_node[s["id"]])
+
+        # Pass 1 — real symbols (the manifest preassigns real symbols only, and
+        # synthetic <module> pseudo-symbols must follow their file's real owner).
+        file_real_count: dict = {}  # file -> Counter of decided node names
+        for s in symbols:
+            sid = s["id"]
+            if s.get("synthetic"):
+                continue
+            pinned = pinned_sym.get(sid)
+            if pinned is not None:
+                name = _manifest_node_name(pinned)
+                if name is not None:
+                    node_of_symbol[sid] = name
+                    file_real_count.setdefault(s["file"], Counter())[name] += 1
+                    continue
+            if sid in preserved_node:
+                node_of_symbol[sid] = preserved_node[sid]
+                file_real_count.setdefault(s["file"], Counter())[preserved_node[sid]] += 1
+                continue
+            # A real symbol new since the last scan.
+            majority = Counter(file_owners.get(s["file"], [])).most_common(1)
+            name = majority[0][0] if majority else UNASSIGNED_NODE
+            node_of_symbol[sid] = name
+            file_real_count.setdefault(s["file"], Counter())[name] += 1
+
+        # Pass 2 — synthetic <module> pseudo-symbols not in the old graph: join
+        # the node their file's real symbols landed in, else "Unassigned".
+        for s in symbols:
+            sid = s["id"]
+            if not s.get("synthetic"):
+                continue
+            if sid in preserved_node:
+                node_of_symbol[sid] = preserved_node[sid]
+                continue
+            majority = (file_real_count.get(s["file"]) or Counter()).most_common(1)
+            node_of_symbol[sid] = majority[0][0] if majority else UNASSIGNED_NODE
         node_meta = {name: preserved_summary.get(name, "")
                      for name in set(node_of_symbol.values())}
         unassigned = sum(1 for s in symbols
@@ -386,7 +448,7 @@ def build_graph(root: str, provider_name: str = "deepseek", no_llm: bool = False
     out_domain_edges = [{"from": a, "to": b, "weight": w, "weak": w == 1}
                         for (a, b), w in sorted(dagg.items())]
 
-    return {
+    graph = {
         "version": GRAPH_VERSION,
         "grouping": grouping,
         "repo": {
@@ -414,6 +476,60 @@ def build_graph(root: str, provider_name: str = "deepseek", no_llm: bool = False
         "warnings": warnings,
     }
 
+    # --- descriptions (item 7): one batched pass, after the node breakdown
+    # and dependency graph above are final. Never a build failure — a node
+    # that can't be described gets description: None and the run continues.
+    # Opt-in (generate_descriptions): direct build_graph() callers — mainly
+    # the test suite, always with no_llm=True — default to off, so adding
+    # this never makes an existing test hit the network. load_or_build turns
+    # it on for the real CLI/studio path (tied to the caller's own no_llm,
+    # not the no_llm this function may have been called with internally to
+    # skip re-grouping while preserving an existing LLM layout).
+    log.info("stage C: descriptions")
+    graph["stats"]["descriptions"] = _run_descriptions(
+        root, graph, provider_name=provider_name, model=model,
+        enabled=generate_descriptions,
+        existing_graph=existing_for_descriptions, force=regenerate_descriptions)
+
+    return graph
+
+
+def _run_descriptions(root: str, graph: dict, provider_name: str, model: str | None,
+                      enabled: bool, existing_graph: dict | None, force: bool) -> dict:
+    """Every node/domain always gets the four description_* keys — None/empty
+    when descriptions are off or the provider is unavailable, so the schema
+    is the same either way. See describe.py for the actual generation."""
+    total = len(graph.get("nodes", [])) + len(graph.get("domains", []))
+    empty_summary = {"total": total, "described": 0, "failed": [], "reused": 0,
+                     "usage": {"input_tokens": 0, "output_tokens": 0}}
+
+    def mark_ungenerated():
+        for n in graph["nodes"]:
+            n.setdefault("description", None)
+            n.setdefault("description_hash", "")
+            n.setdefault("description_model", "")
+            n.setdefault("description_generated_at", "")
+        for d in graph["domains"]:
+            d.setdefault("description", None)
+            d.setdefault("description_hash", "")
+            d.setdefault("description_model", "")
+            d.setdefault("description_generated_at", "")
+
+    if not enabled:
+        mark_ungenerated()
+        return empty_summary
+    from . import describe
+    try:
+        provider = make_provider(provider_name) if model is None \
+            else make_provider(provider_name, model=model)
+    except Exception as e:
+        log.warning("descriptions skipped: provider %r unavailable (%s)", provider_name, e)
+        mark_ungenerated()
+        return empty_summary
+    return describe.build_descriptions(
+        root, graph, provider, existing_graph=existing_graph, force=force,
+        model_name=_resolve_model(provider_name, model))
+
 
 def write_graph(root: str, graph: dict) -> str:
     path = graph_path(root)
@@ -426,16 +542,25 @@ def write_graph(root: str, graph: dict) -> str:
 def load_or_build(root: str, provider_name: str = "deepseek", no_llm: bool = False,
                   force: bool = False, regroup: bool = False, extra_ignore=(),
                   model: str | None = None, cache_base=None, entry_points=None,
-                  node_min: int = 5, node_max: int = 15):
+                  node_min: int = 5, node_max: int = 15,
+                  regenerate_descriptions: bool = False):
     """Return ``(graph, from_cache: bool)``. Writes to disk on recompute.
 
     Cache-first: if ``repo_hash`` AND ``config_fingerprint`` in
     ``.mindgraph/graph.json`` match the current ones and there is no
-    ``--force``/``--regroup`` — return the cache without recomputing. LLM-layout
-    protection (§6): ``--no-llm`` (and an ordinary recompute on a changed hash
-    without ``--regroup``) recomputes only the statics, leaving the existing model
-    nodes in place. A full recompute — only ``--regroup`` (and it is free on
-    unchanged code — the LLM-response cache is keyed by prompt hash).
+    ``--force``/``--regroup``/``--regenerate-descriptions`` — return the cache
+    without recomputing. LLM-layout protection (§6): ``--no-llm`` (and an
+    ordinary recompute on a changed hash without ``--regroup``) recomputes
+    only the statics, leaving the existing model nodes in place. A full
+    recompute — only ``--regroup`` (and it is free on unchanged code — the
+    LLM-response cache is keyed by prompt hash).
+
+    Descriptions (item 7) regenerate only for nodes/domains whose
+    ``description_hash`` changed since ``existing`` — passed through as
+    ``existing_for_descriptions`` regardless of which build_graph branch
+    below runs, so a plain recompute (not just --regroup) still reuses them.
+    ``generate_descriptions`` follows THIS call's own ``no_llm`` — not
+    whatever build_graph is internally called with to skip re-grouping.
     """
     root = os.path.abspath(root)
     current_hash = compute_repo_hash(root, extra_ignore)
@@ -452,6 +577,8 @@ def load_or_build(root: str, provider_name: str = "deepseek", no_llm: bool = Fal
         except (json.JSONDecodeError, OSError):
             existing = None  # damaged cache — recompute silently
 
+    generate_descriptions = not no_llm
+
     # --regroup: a full recompute of the LLM layout, always, even with an
     # up-to-date cache (that is exactly the flag's meaning — explicit regrouping).
     if regroup:
@@ -460,12 +587,16 @@ def load_or_build(root: str, provider_name: str = "deepseek", no_llm: bool = Fal
                             model=model, cache_base=cache_base,
                             entry_points=entry_points,
                             node_min=node_min, node_max=node_max,
-                            config_fingerprint=current_fingerprint)
+                            config_fingerprint=current_fingerprint,
+                            generate_descriptions=generate_descriptions,
+                            existing_for_descriptions=existing,
+                            regenerate_descriptions=regenerate_descriptions)
         write_graph(root, graph)
         return graph, False
 
-    # The cache is up to date (code AND config unchanged) and --force is not set.
-    if not force and existing is not None \
+    # The cache is up to date (code AND config unchanged) and neither --force
+    # nor --regenerate-descriptions is set.
+    if not force and not regenerate_descriptions and existing is not None \
             and existing.get("repo", {}).get("repo_hash") == current_hash \
             and existing.get("repo", {}).get("config_fingerprint") == current_fingerprint:
         return existing, True
@@ -480,14 +611,20 @@ def load_or_build(root: str, provider_name: str = "deepseek", no_llm: bool = Fal
                             extra_ignore=extra_ignore, model=model,
                             cache_base=cache_base, entry_points=entry_points,
                             node_min=node_min, node_max=node_max,
-                            config_fingerprint=current_fingerprint)
+                            config_fingerprint=current_fingerprint,
+                            generate_descriptions=generate_descriptions,
+                            existing_for_descriptions=existing,
+                            regenerate_descriptions=regenerate_descriptions)
     else:
         graph = build_graph(root, provider_name=provider_name, no_llm=no_llm,
                             repo_hash=current_hash, extra_ignore=extra_ignore,
                             model=model, cache_base=cache_base,
                             entry_points=entry_points,
                             node_min=node_min, node_max=node_max,
-                            config_fingerprint=current_fingerprint)
+                            config_fingerprint=current_fingerprint,
+                            generate_descriptions=generate_descriptions,
+                            existing_for_descriptions=existing,
+                            regenerate_descriptions=regenerate_descriptions)
 
     write_graph(root, graph)
     return graph, False

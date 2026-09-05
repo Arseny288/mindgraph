@@ -145,7 +145,8 @@ def _cmd_scan(args) -> int:
         force=args.force, regroup=args.regroup, extra_ignore=config.ignore,
         model=config.model, cache_base=cache_base,
         entry_points=config.entry_points,
-        node_min=config.node_min, node_max=config.node_max)
+        node_min=config.node_min, node_max=config.node_max,
+        regenerate_descriptions=args.regenerate_descriptions)
 
     path = emit.graph_path(root)
     if from_cache:
@@ -153,6 +154,14 @@ def _cmd_scan(args) -> int:
               file=sys.stderr)
     else:
         print(f"written: {path}", file=sys.stderr)
+
+    desc = graph.get("stats", {}).get("descriptions")
+    if desc and not from_cache:
+        failed = desc["failed"]
+        print(f"descriptions: {desc['total']} nodes, {desc['described']} described, "
+              f"{desc['reused']} reused, {len(failed)} failed", file=sys.stderr)
+        for name, reason in failed[:10]:
+            print(f"  ! {name}: {reason}", file=sys.stderr)
 
     if args.json:
         _out_json({
@@ -303,15 +312,21 @@ def _read_diff(diff: str) -> str:
 
 
 def _agent_main() -> str:
+    """The agent entry point: the bundled ``_agent/agent.cjs`` (shipped as
+    package-data) when present, otherwise the TypeScript source in a dev checkout."""
+    bundle = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "_agent", "agent.cjs")
+    if os.path.exists(bundle):
+        return bundle
     return os.path.join(_TOOL_ROOT, "agent", "src", "main.ts")
 
 
 def _cmd_agent(args) -> int:
-    """Launch the TS agent (phase 2.5, item 5). ``node agent/src/main.ts`` — internal."""
+    """Launch the headless agent (phase 2.5): the bundled agent.cjs, run by node."""
     agent_main = _agent_main()
     if not os.path.exists(agent_main):
         print(f"mindgraph: agent not found ({agent_main}); "
-              f"need an agent/ directory at the tool root", file=sys.stderr)
+              f"run `cd agent && npm run build`", file=sys.stderr)
         return EXIT_RUNTIME
 
     node_bin = shutil.which("node")
@@ -371,6 +386,8 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--regroup", action="store_true")
     _add_llm_flags(p)
     p.add_argument("--port", type=int, default=None)
+    p.add_argument("--regenerate-descriptions", action="store_true",
+                   help="force node/domain descriptions to regenerate regardless of content hash")
 
     p = sub.add_parser("graph", help="the whole graph (nodes, edges, metadata)")
     p.add_argument("--json", action="store_true")
@@ -417,12 +434,35 @@ def build_parser() -> argparse.ArgumentParser:
                    help="disable boundary checks (task validation)")
     p.add_argument("--json", action="store_true")
 
+    p = sub.add_parser("studio", help="the local agent studio (canvas)")
+    p.add_argument("dir", nargs="?", default=".")
+    p.add_argument("--port", type=int, default=None)
+    p.add_argument("--no-browser", action="store_true")
+    p.add_argument("--no-watch", action="store_true",
+                   help="disable the file watcher (auto-rebuild graph on save)")
+    p.add_argument("--fake-verdicts", action="store_true",
+                   help="mock test verdicts in the real event format (phase 3 not ready)")
+
     return ap
 
 
 def _list_providers() -> None:
     for name in sorted(PROVIDERS):
         print(f"{name:<10} default model: {_PROVIDER_MODELS[name]}")
+
+
+def _cmd_studio(args) -> int:
+    """The local agent studio (STUDIO.md): static + REST/SSE + agent supervisor."""
+    from . import studio
+    root = os.path.abspath(args.dir)
+    if not os.path.isdir(root):
+        print(f"mindgraph: {args.dir!r} is not a directory", file=sys.stderr)
+        return EXIT_RUNTIME
+    config = _resolve_config(root, args)
+    studio.run(root, port=args.port or config.port,
+               open_browser=not args.no_browser,
+               watch=not args.no_watch)
+    return EXIT_OK
 
 
 _DISPATCH = {
@@ -434,6 +474,7 @@ _DISPATCH = {
     "tests": _cmd_tests,
     "verify": _cmd_verify,
     "agent": _cmd_agent,
+    "studio": _cmd_studio,
 }
 
 
