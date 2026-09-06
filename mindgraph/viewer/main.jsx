@@ -478,14 +478,17 @@ function Md({ text, onNodeTag }) {
   return h("div", { ref, className: "md", dangerouslySetInnerHTML: { __html: html } });
 }
 
-// Reasoning: one collapsed line up top, expanded shows the trace subordinate
-// to the answer (§5). It self-collapses when the answer streams unless open.
+// Reasoning (item 4): while thinking, the live text renders open, in muted
+// ink (--ink-2) — it's process, not output. The instant the answer starts
+// streaming it auto-collapses to one quiet --ink-3 line ("Thought for 5.4s"),
+// still expandable on click. No spinner, no animated dots — a static
+// "Thinking…" label covers the no-duration-yet case.
 function Reason({ thinking, open, onToggle }) {
   const secs = countThinkingSeconds(thinking);
   const text = (thinking && thinking.s || "").trim();
-  return h("div", { className: "reason" }, [
+  return h("div", { className: "reason" + (open ? " open" : "") }, [
     h("div", { className: "reason-head", onClick: onToggle },
-      `${open ? "▾" : "▸"} ${secs ? `Thought for ${secs}s` : "Thought"}`),
+      `${open ? "▾" : "▸"} ${secs ? `Thought for ${secs}s` : "Thinking…"}`),
     open && text && h("div", { className: "reason-body" }, text),
   ]);
 }
@@ -502,6 +505,12 @@ function App() {
   const [showAllEdges, setShowAllEdges] = useState(false);
 
   const [sessions, setSessions] = useState([]);
+  // item 2: multiple, persistent, per-graph conversations — `sessions` above
+  // now holds only the ACTIVE conversation's turns (see the poll effect).
+  const [conversations, setConversations] = useState([]);
+  const [activeConvId, setActiveConvId] = useState(null);
+  const [convTitle, setConvTitle] = useState("New conversation");
+  const [convStale, setConvStale] = useState(false);
   const [current, setCurrent] = useState(null); // latest session state (meta)
   const [graphVersion, setGraphVersion] = useState(null);
   const [taskText, setTaskText] = useState("");
@@ -555,6 +564,64 @@ function App() {
   const taRef = useRef(null);
   const turnsRef = useRef(null);
 
+  // --- item 4: auto-scroll with real intent detection --------------------
+  // A ref, not state: streaming can append many times a second and this must
+  // never cause an extra render. `showJump` is the only state — it just
+  // drives the button's visibility.
+  const stickyRef = useRef(true);
+  const [showJump, setShowJump] = useState(false);
+
+  useEffect(() => {
+    const el = turnsRef.current;
+    if (!el) return undefined;
+    // wheel/touchmove are USER gestures — our own `el.scrollTop = ...` below
+    // fires a `scroll` event but never these, so this is what tells a real
+    // upward scroll apart from the programmatic one that keeps us pinned.
+    const onWheel = (e) => {
+      if (e.deltaY < 0) { stickyRef.current = false; setShowJump(true); }
+    };
+    let lastTouchY = null;
+    const onTouchStart = (e) => { lastTouchY = e.touches[0]?.clientY ?? null; };
+    const onTouchMove = (e) => {
+      const y = e.touches[0]?.clientY ?? null;
+      if (y != null && lastTouchY != null && y > lastTouchY) {
+        // finger moving down the screen = scrolling toward earlier content
+        stickyRef.current = false; setShowJump(true);
+      }
+      lastTouchY = y;
+    };
+    const onScroll = () => {
+      const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+      if (nearBottom) { stickyRef.current = true; setShowJump(false); }
+    };
+    el.addEventListener("wheel", onWheel, { passive: true });
+    el.addEventListener("touchstart", onTouchStart, { passive: true });
+    el.addEventListener("touchmove", onTouchMove, { passive: true });
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      el.removeEventListener("wheel", onWheel);
+      el.removeEventListener("touchstart", onTouchStart);
+      el.removeEventListener("touchmove", onTouchMove);
+      el.removeEventListener("scroll", onScroll);
+    };
+  }, []);
+
+  // Follow the bottom while sticky, on every content change (new deltas,
+  // new trace lines, a new turn). Direct scrollTop assignment, not smooth
+  // scrollIntoView — smooth scrolling fights the poll cadence and stutters.
+  useLayoutEffect(() => {
+    const el = turnsRef.current;
+    if (!el || !stickyRef.current) return;
+    el.scrollTop = el.scrollHeight;
+  }, [sessions]);
+
+  const jumpToLatest = useCallback(() => {
+    stickyRef.current = true;
+    setShowJump(false);
+    const el = turnsRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, []);
+
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
@@ -597,14 +664,83 @@ function App() {
           if (prev && gv && prev !== gv) { loadGraph(); setHighlight({}); }
           return gv;
         });
-        const ss = await (await fetch("/api/sessions")).json();
-        setSessions(ss.sessions || []);
+        // item 2: the feed shows only the ACTIVE conversation's turns, not
+        // every session in the repo — switching conversations must not
+        // touch the graph view, so this poll never calls loadGraph/fitView.
+        const cl = await (await fetch("/api/conversations")).json();
+        setConversations(cl.conversations || []);
+        const activeId = cl.active_id || null;
+        setActiveConvId(activeId);
+        if (activeId) {
+          const conv = await (await fetch(`/api/conversation?id=${encodeURIComponent(activeId)}`)).json();
+          setSessions(conv.turns || []);
+          setConvTitle(conv.title || "New conversation");
+          setConvStale(!!conv.stale);
+        } else {
+          setSessions([]);
+          setConvTitle("New conversation");
+          setConvStale(false);
+        }
       } catch { /* studio not running */ }
       setTimeout(poll, 800);
     }
     poll();
     return () => { stop = true; };
   }, [loadGraph]);
+
+  // item 2: conversation switcher actions — create/switch/rename/delete.
+  // Switching never touches graph/layout state, only which turns render.
+  const refreshConversation = useCallback(async (cid) => {
+    if (!cid) { setSessions([]); setConvTitle("New conversation"); setConvStale(false); return; }
+    try {
+      const conv = await (await fetch(`/api/conversation?id=${encodeURIComponent(cid)}`)).json();
+      setSessions(conv.turns || []);
+      setConvTitle(conv.title || "New conversation");
+      setConvStale(!!conv.stale);
+    } catch { /* ignore — next poll tick recovers */ }
+  }, []);
+
+  const newConversation = useCallback(async () => {
+    const r = await fetch("/api/conversations", { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: "{}" });
+    const conv = await r.json();
+    const cl = await (await fetch("/api/conversations")).json();
+    setConversations(cl.conversations || []);
+    setActiveConvId(conv.id);
+    await refreshConversation(conv.id);
+  }, [refreshConversation]);
+
+  const switchConversation = useCallback(async (cid) => {
+    await fetch("/api/conversations/switch", { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ conversation_id: cid }) });
+    setActiveConvId(cid);
+    await refreshConversation(cid);
+  }, [refreshConversation]);
+
+  const renameConversation = useCallback(async (cid, title) => {
+    const r = await fetch("/api/conversations/rename", { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ conversation_id: cid, title }) });
+    const body = await r.json();
+    if (body.conversation) {
+      setConversations((cs) => cs.map((c) => c.id === cid ? { ...c, title: body.conversation.title } : c));
+      if (cid === activeConvId) setConvTitle(body.conversation.title);
+    }
+  }, [activeConvId]);
+
+  const deleteConversation = useCallback(async (cid) => {
+    if (!confirm("Delete this conversation? This cannot be undone.")) return;
+    await fetch("/api/conversations/delete", { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ conversation_id: cid }) });
+    const cl = await (await fetch("/api/conversations")).json();
+    setConversations(cl.conversations || []);
+    if (cid === activeConvId) {
+      setActiveConvId(cl.active_id || null);
+      await refreshConversation(cl.active_id || null);
+    }
+  }, [activeConvId, refreshConversation]);
 
   // --- persist rail width / collapse ---
   useEffect(() => {
@@ -1085,6 +1221,11 @@ function App() {
     if (!taskText.trim()) return;
     setLastPrompt(taskText.trim());
     setAppliedOnce(false);
+    // item 4: sending always jumps to the bottom and re-enables stickiness,
+    // regardless of where the user had scrolled to.
+    stickyRef.current = true;
+    setShowJump(false);
+    if (turnsRef.current) turnsRef.current.scrollTop = turnsRef.current.scrollHeight;
     post("/api/plan", { scope_node_id: scopeNodeId, prompt: taskText.trim() });
     setTaskText("");
   }, [taskText, scopeNodeId, post]);
@@ -1193,7 +1334,10 @@ function App() {
     h("header", { key: "top", className: "topbar" }, [
       h(Breadcrumbs, { key: "crumbs", segments: pathSegments }),
       h("div", { key: "right", className: "topbar-right" }, [
-        h(SettingsMenu, { key: "settings", themeChoice, onThemeChange: setThemeChoice }),
+        h(SettingsMenu, {
+          key: "settings", themeChoice, onThemeChange: setThemeChoice,
+          projectName: graph?.repo?.name || graph?.repo?.root || "",
+        }),
       ]),
     ]),
     h("div", { key: "body", className: "app-body",
@@ -1258,13 +1402,19 @@ function App() {
         // blocked-refusals count moved off the header (each refusal already
         // renders inline, in red, at the trace line itself).
         h("div", { key: "head", className: "rail-head" }, [
-          h("div", { className: "rail-title" }, "Conversation"),
+          h(ConversationSwitcher, {
+            key: "conv", title: convTitle, conversations, activeId: activeConvId,
+            onSwitch: switchConversation, onNew: newConversation,
+            onRename: renameConversation, onDelete: deleteConversation,
+          }),
           h("button", { className: "rail-collapse", onClick: () => setRailCollapsed((v) => !v), "aria-label": "collapse", title: "Collapse (Ctrl/Cmd+B)" }, "›"),
         ]),
         h("div", { key: "turns", className: "turns", ref: turnsRef },
+          convStale && h("div", { key: "stale", className: "stale-notice" },
+            "Graph was rebuilt since this conversation — node references may be stale."),
           sessions.length === 0
             ? h(EmptyFeed, { onSuggest: (text) => { setTaskText(text); taRef.current?.focus(); } })
-            : sessions.map((s, idx) => h(Turn, {
+            : [...sessions.map((s, idx) => h(Turn, {
                 key: s.id, session: s, graph, nodeById, isLast: idx === sessions.length - 1,
                 showScopeMeta: idx === 0 || scopeLabel(sessions[idx - 1]) !== scopeLabel(s),
                 onChip: (id) => { setSelectedId(id); setScopeNodeId(id); setClickRect(null); },
@@ -1274,7 +1424,12 @@ function App() {
                 onDiscard: () => discardTurn(s.id),
                 onDiffSeen: () => setDiffReady((prev) => ({ ...prev, [s.id]: true })),
                 onRetry: retryTurn,
-              }))),
+              })),
+              // item 4: sticky within the scrolling feed itself — pins to
+              // the bottom of the visible area with no need to know the
+              // composer's height, only shown while unstuck.
+              showJump && h("button", { key: "jump", className: "jump-latest", onClick: jumpToLatest }, "↓ Jump to latest"),
+            ]),
         h(Composer, {
           key: "composer",
           model: composer, mode, setMode, agentLabel,
@@ -1323,8 +1478,9 @@ const THEME_OPTIONS = [["system", "System"], ["light", "Light"], ["dark", "Dark"
 
 // item 4: a settings icon opens a small popover menu, built as a LIST of rows
 // (one today — Theme) so future settings are additions, not a rewrite.
-function SettingsMenu({ themeChoice, onThemeChange }) {
+function SettingsMenu({ themeChoice, onThemeChange, projectName }) {
   const [open, setOpen] = useState(false);
+  const [dataOpen, setDataOpen] = useState(false);
   const ref = useRef(null);
 
   useEffect(() => {
@@ -1353,11 +1509,264 @@ function SettingsMenu({ themeChoice, onThemeChange }) {
       key: "btn", className: "topbar-btn settings-btn", onClick: () => setOpen((v) => !v),
       "aria-label": "Settings", title: "Settings",
     }, "⚙"),
-    open && h("div", { key: "menu", className: "settings-menu" },
-      rows.map((r) => h("div", { key: r.key, className: "settings-row" }, [
+    open && h("div", { key: "menu", className: "settings-menu" }, [
+      ...rows.map((r) => h("div", { key: r.key, className: "settings-row" }, [
         h("div", { key: "l", className: "settings-row-label" }, r.label),
         r.control,
-      ]))),
+      ])),
+      h("div", { key: "data-toggle", className: "settings-row", onClick: () => setDataOpen((v) => !v) }, [
+        h("div", { key: "l", className: "settings-row-label" }, "Data"),
+        h("span", { key: "c", className: "conv-switcher-chevron" }, dataOpen ? "▾" : "▸"),
+      ]),
+      dataOpen && h(DataSection, { key: "data", projectName }),
+    ]),
+  ]);
+}
+
+// --- settings "Data" section (storage amendment): sizes + destructive
+// actions, every one naming exactly what disappears and what survives.
+function formatBytes(n) {
+  if (!n) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  let v = n, i = 0;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return `${v.toFixed(v >= 10 || i === 0 ? 0 : 1)} ${units[i]}`;
+}
+
+function formatAgo(ts) {
+  if (!ts) return "never";
+  const s = Date.now() / 1000 - ts;
+  if (s < 3600) return `${Math.max(1, Math.round(s / 60))}m ago`;
+  if (s < 86400) return `${Math.round(s / 3600)}h ago`;
+  return `${Math.round(s / 86400)}d ago`;
+}
+
+function MemoryEditor({ scope, onClose }) {
+  const [content, setContent] = useState("");
+  const [loaded, setLoaded] = useState(false);
+  useEffect(() => {
+    fetch(`/api/memory?scope=${scope}`).then((r) => r.json())
+      .then((d) => { setContent(d.content || ""); setLoaded(true); });
+  }, [scope]);
+  const save = async () => {
+    await fetch("/api/memory", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scope, content }) });
+    onClose();
+  };
+  return h("div", { className: "data-editor" }, [
+    h("textarea", {
+      key: "ta", className: "data-editor-ta", rows: 7, value: content, disabled: !loaded,
+      onChange: (e) => setContent(e.target.value), placeholder: "(empty)",
+    }),
+    h("div", { key: "row", className: "data-editor-row" }, [
+      h("button", { key: "save", className: "btn primary", onClick: save }, "Save"),
+      h("button", { key: "cancel", className: "btn ghost-quiet", onClick: onClose }, "Cancel"),
+    ]),
+  ]);
+}
+
+function ConfirmTyped({ projectName, actionLabel, onConfirm, onCancel }) {
+  const [value, setValue] = useState("");
+  return h("div", { className: "data-confirm" }, [
+    h("div", { key: "l", className: "data-confirm-label" },
+      `Type "${projectName}" to confirm — this cannot be undone:`),
+    h("input", {
+      key: "i", className: "data-confirm-input", value, autoFocus: true,
+      onChange: (e) => setValue(e.target.value),
+    }),
+    h("div", { key: "row", className: "data-editor-row" }, [
+      h("button", {
+        key: "go", className: "btn danger", disabled: value !== projectName, onClick: onConfirm,
+      }, actionLabel),
+      h("button", { key: "cancel", className: "btn ghost-quiet", onClick: onCancel }, "Cancel"),
+    ]),
+  ]);
+}
+
+function DataSection({ projectName }) {
+  const [summary, setSummary] = useState(null);
+  const [editing, setEditing] = useState(null);     // "project" | "global" | null
+  const [confirming, setConfirming] = useState(null); // "project" | "all" | null
+
+  const refresh = useCallback(() => {
+    fetch("/api/data").then((r) => r.json()).then(setSummary).catch(() => setSummary(null));
+  }, []);
+  useEffect(refresh, [refresh]);
+
+  const clearTarget = useCallback(async (target, msg) => {
+    if (!confirm(msg)) return;
+    await fetch("/api/data/clear", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target }) });
+    refresh();
+  }, [refresh]);
+
+  if (!summary) return h("div", { className: "data-loading" }, "Loading…");
+
+  return h("div", { className: "data-section" }, [
+    h("div", { key: "pm", className: "data-row" }, [
+      h("div", { key: "l", className: "data-row-label" },
+        `Project memory — ${formatBytes(summary.project_memory_bytes)}`),
+      h("div", { key: "a", className: "data-row-actions" }, [
+        h("button", { key: "e", className: "settings-option",
+          onClick: () => setEditing((v) => v === "project" ? null : "project") }, "Edit"),
+        h("button", { key: "c", className: "settings-option",
+          onClick: () => clearTarget("project_memory",
+            "Clear project memory? Conversations and the graph are kept.") }, "Clear"),
+      ]),
+    ]),
+    editing === "project" && h(MemoryEditor, {
+      key: "pme", scope: "project", onClose: () => { setEditing(null); refresh(); } }),
+
+    h("div", { key: "gm", className: "data-row" }, [
+      h("div", { key: "l", className: "data-row-label" },
+        `Global memory — ${formatBytes(summary.global_memory_bytes)}`),
+      h("div", { key: "a", className: "data-row-actions" }, [
+        h("button", { key: "e", className: "settings-option",
+          onClick: () => setEditing((v) => v === "global" ? null : "global") }, "Edit"),
+        h("button", { key: "c", className: "settings-option",
+          onClick: () => clearTarget("global_memory",
+            "Clear global memory? This applies to every project, not just this one.") }, "Clear"),
+      ]),
+    ]),
+    editing === "global" && h(MemoryEditor, {
+      key: "gme", scope: "global", onClose: () => { setEditing(null); refresh(); } }),
+
+    h("div", { key: "cv", className: "data-row" }, [
+      h("div", { key: "l", className: "data-row-label" },
+        `Conversations — ${summary.conversations_count} · ${formatBytes(summary.conversations_bytes)}`),
+      h("button", { key: "d", className: "settings-option",
+        onClick: () => clearTarget("conversations",
+          `Delete all ${summary.conversations_count} conversations? Memory and the graph are kept.`) },
+        "Delete all"),
+    ]),
+
+    h("div", { key: "gr", className: "data-row" }, [
+      h("div", { key: "l", className: "data-row-label" },
+        `Graph cache — Built ${formatAgo(summary.graph_built_at)} · ${formatBytes(summary.graph_bytes)}`),
+      h("button", { key: "d", className: "settings-option",
+        onClick: () => clearTarget("graph",
+          "Delete the built graph? Memory and conversations are kept — rescan to rebuild it.") },
+        "Delete"),
+    ]),
+
+    h("div", { key: "hr1", className: "data-divider" }),
+
+    h("div", { key: "proj", className: "data-row" }, [
+      h("div", { key: "l", className: "data-row-label danger" }, "This project"),
+      h("button", { key: "b", className: "settings-option danger",
+        onClick: () => setConfirming((v) => v === "project" ? null : "project") },
+        "Delete everything for this project"),
+    ]),
+    confirming === "project" && h(ConfirmTyped, {
+      key: "cp", projectName, actionLabel: "Delete this project",
+      onConfirm: async () => {
+        await fetch("/api/data/clear", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ target: "project" }) });
+        setConfirming(null); refresh();
+      },
+      onCancel: () => setConfirming(null),
+    }),
+
+    h("div", { key: "all", className: "data-row" }, [
+      h("div", { key: "l", className: "data-row-label danger" }, "All mindgraph data"),
+      h("button", { key: "b", className: "settings-option danger",
+        onClick: () => setConfirming((v) => v === "all" ? null : "all") },
+        "Delete everything, all projects"),
+    ]),
+    confirming === "all" && h(ConfirmTyped, {
+      key: "ca", projectName, actionLabel: "Delete ALL data",
+      onConfirm: async () => {
+        await fetch("/api/data/clear", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ target: "all" }) });
+        setConfirming(null); refresh();
+      },
+      onCancel: () => setConfirming(null),
+    }),
+
+    h("div", { key: "root", className: "data-row-label data-storage-root" },
+      [h("div", { key: "l" }, "Storage root"), h("code", { key: "p" }, summary.storage_root)]),
+  ]);
+}
+
+// --- conversation switcher (item 2): title + chevron, "+" for new, a
+// dropdown of recent conversations with relative time, rename and delete.
+// Switching only changes which turns render — it never touches the graph
+// view or triggers fitView (see the poll effect / switchConversation).
+function relativeTime(ts) {
+  if (!ts) return "";
+  const s = Date.now() / 1000 - ts;
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.round(s / 60)}m ago`;
+  if (s < 86400) return `${Math.round(s / 3600)}h ago`;
+  return `${Math.round(s / 86400)}d ago`;
+}
+
+function ConversationSwitcher({ title, conversations, activeId, onSwitch, onNew, onRename, onDelete }) {
+  const [open, setOpen] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [editValue, setEditValue] = useState("");
+  const ref = useRef(null);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onDoc = (e) => { if (ref.current && !ref.current.contains(e.target)) { setOpen(false); setEditingId(null); } };
+    const onKey = (e) => { if (e.key === "Escape") { setOpen(false); setEditingId(null); } };
+    document.addEventListener("mousedown", onDoc);
+    window.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("mousedown", onDoc); window.removeEventListener("keydown", onKey); };
+  }, [open]);
+
+  const startEdit = (c) => { setEditingId(c.id); setEditValue(c.title || ""); };
+  const commitEdit = () => {
+    const v = editValue.trim();
+    if (v && editingId) onRename(editingId, v);
+    setEditingId(null);
+  };
+
+  return h("div", { ref, className: "conv-switcher-wrap" }, [
+    h("button", {
+      key: "btn", className: "conv-switcher-btn", onClick: () => setOpen((v) => !v),
+      title: "Switch conversation",
+    }, [
+      h("span", { key: "t", className: "conv-switcher-title" }, title || "New conversation"),
+      h("span", { key: "c", className: "conv-switcher-chevron" }, "⌄"),
+    ]),
+    h("button", {
+      key: "new", className: "conv-switcher-new", onClick: onNew,
+      "aria-label": "New conversation", title: "New conversation",
+    }, "+"),
+    open && h("div", { key: "menu", className: "conv-menu" },
+      conversations.length === 0
+        ? h("div", { className: "conv-menu-empty" }, "No conversations yet")
+        : conversations.map((c) => h("div", {
+            key: c.id, className: "conv-row" + (c.id === activeId ? " active" : ""),
+          }, editingId === c.id
+            ? [
+                h("input", {
+                  key: "edit", className: "conv-row-edit", autoFocus: true, value: editValue,
+                  onChange: (e) => setEditValue(e.target.value),
+                  onKeyDown: (e) => { if (e.key === "Enter") commitEdit(); if (e.key === "Escape") setEditingId(null); },
+                  onBlur: commitEdit,
+                }),
+              ]
+            : [
+                h("div", {
+                  key: "main", className: "conv-row-main",
+                  onClick: () => { onSwitch(c.id); setOpen(false); },
+                }, [
+                  h("div", { key: "t", className: "conv-row-title" }, c.title || "New conversation"),
+                  h("div", { key: "m", className: "conv-row-meta" }, relativeTime(c.updated_at)),
+                ]),
+                h("button", {
+                  key: "ren", className: "conv-row-action", title: "Rename",
+                  onClick: (e) => { e.stopPropagation(); startEdit(c); },
+                }, "✎"),
+                h("button", {
+                  key: "del", className: "conv-row-action", title: "Delete",
+                  onClick: (e) => { e.stopPropagation(); onDelete(c.id); },
+                }, "🗑"),
+              ])),
+    ),
   ]);
 }
 
@@ -1506,14 +1915,21 @@ function PlanPanel({ plan, blocked, nodeNameOf, onChip }) {
 // One phase of a turn (plan pass / execution pass): thinking on top, then the
 // assistant's prose and tool traces in flow.
 function StepView({ step, graph, showPlan, planBlocked, nodeNameOf, onChip, onNodeTag }) {
-  const [reasonOpen, setReasonOpen] = useState(false);
+  // item 4: open (showing live thinking) until the answer starts streaming,
+  // then auto-collapse to the one-line form — but only ever automatically;
+  // once the user clicks it themselves, that choice sticks for this step.
+  const [manualOpen, setManualOpen] = useState(null); // null = follow the auto rule
+  const hasAnswer = step.parts.some((p) => p.kind === "text");
+  const reasonOpen = manualOpen ?? !hasAnswer;
   const segs = segmentsOf(step.parts);
   const hasDoc = step.parts.some((p) => p.kind === "text") || step.parts.some((p) => p.kind === "trace");
   const liveText = step.parts.length === 0;
-  if (liveText && !step.plan) return null; // nothing yet — text appearing IS the loading state
+  // Thinking-only (no text/trace parts yet, no plan) used to render nothing
+  // at all — the live grey thinking text IS visible output now, not a gap.
+  if (liveText && !step.plan && !step.thinking) return null;
   return h("div", { className: "step" }, [
     step.thinking && h(Reason, { key: "r", thinking: step.thinking, open: reasonOpen,
-      onToggle: () => setReasonOpen((v) => !v) }),
+      onToggle: () => setManualOpen((v) => !(v ?? reasonOpen)) }),
     segs.map((seg, i) => {
       if (seg.kind === "text") {
         const text = seg.items.map((p) => p.s).join("");

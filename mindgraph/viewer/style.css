@@ -299,7 +299,7 @@
 
   /* --- conversation rail --- */
   .rail-head { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 10px 14px;
-    border-bottom: 1px solid var(--line); }
+    border-bottom: 1px solid var(--line); position: relative; }
   .rail-title { flex: 1 1 auto; font-size: 14px; font-weight: 600; color: var(--ink); }
   /* .rail-blocked was the header's refusal counter — item 6 removes it from
      the header (title + collapse chevron, nothing else); each refusal still
@@ -418,11 +418,13 @@
   .hljs-title, .hljs-function { color: var(--ink); font-weight: 600; }
   .hljs-params { color: #5A6A4E; }
 
-  /* reasoning: collapsed line, subordinate when open */
+  /* item 4: --ink-3 for the collapsed one-liner (quiet, "Thought for Ns"),
+     --ink-2 while open/live (it's process, not output — never primary ink). */
   .reason { margin: 10px 0 0; }
-  .reason-head { cursor: pointer; font-size: 11px; color: var(--ink-soft); user-select: none; }
+  .reason-head { cursor: pointer; font-size: 11px; color: var(--ink-3); user-select: none; }
   .reason-head:hover { color: var(--ink); }
-  .reason-body { margin-top: 6px; font-size: 12px; line-height: 1.55; color: var(--ink-soft);
+  .reason.open .reason-head { color: var(--ink-2); }
+  .reason-body { margin-top: 6px; font-size: 12px; line-height: 1.55; color: var(--ink-2);
     border-left: 2px solid rgba(0,0,0,0.10); padding-left: 12px; white-space: pre-wrap; }
 
   /* tool traces in the flow of the message; denials never fade */
@@ -757,6 +759,7 @@ body {
 .settings-menu-wrap { position: relative; }
 .settings-btn { font-size: 15px; line-height: 1; }
 .settings-menu { position: absolute; top: calc(100% + 6px); right: 0; z-index: 20; min-width: 190px;
+  max-width: 320px; max-height: 70vh; overflow-y: auto;
   background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
   box-shadow: var(--sh-float); padding: 6px; }
 .settings-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 8px; }
@@ -764,6 +767,31 @@ body {
 .settings-options { display: flex; gap: 2px; background: var(--surface-2); border-radius: 8px; padding: 2px; }
 .settings-option { border: none; background: transparent; color: var(--ink-2); font-size: 11px;
   padding: 4px 8px; border-radius: 6px; cursor: pointer; font-family: inherit; }
+
+/* ============ item: settings "Data" section (storage amendment) ============ */
+.data-section { padding: 2px 2px 4px; border-top: 1px solid var(--line); margin-top: 4px; }
+.data-row { display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 6px 8px; }
+.data-row-label { font-size: 11.5px; color: var(--ink-2); flex: 1 1 auto; min-width: 0; }
+.data-row-label.danger { color: var(--fail); }
+.data-row-actions { display: flex; gap: 2px; flex: 0 0 auto; }
+.settings-option.danger { color: var(--fail); }
+.data-loading { padding: 10px 8px; font-size: 11.5px; color: var(--ink-3); }
+.data-divider { height: 1px; background: var(--line); margin: 4px 8px; }
+.data-editor { padding: 4px 8px 8px; }
+.data-editor-ta { width: 100%; box-sizing: border-box; font: inherit; font-size: 12px;
+  color: var(--ink); background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: 8px; padding: 8px; resize: vertical; }
+.data-editor-row { display: flex; gap: 6px; margin-top: 6px; }
+.data-confirm { padding: 4px 8px 8px; }
+.data-confirm-label { font-size: 11px; color: var(--fail); margin-bottom: 4px; }
+.data-confirm-input { width: 100%; box-sizing: border-box; font: inherit; font-size: 12px;
+  color: var(--ink); background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: 6px; padding: 5px 7px; }
+.data-storage-root { display: flex; flex-direction: column; align-items: flex-start; gap: 3px;
+  padding: 8px; }
+.data-storage-root code { font-size: 10.5px; color: var(--ink-3); user-select: all;
+  word-break: break-all; }
 .settings-option.active { background: var(--surface); color: var(--ink); box-shadow: var(--sh-flat); }
 
 /* Suppressed on first paint (index.html adds/removes .no-transition on <html>)
@@ -812,3 +840,46 @@ body, .app-root, .topbar, .topbar-btn, .canvas, .canvas-area, .rail, .rail-strip
 [data-theme="dark"] .composer-send.filled { color: #1B1B1F; }
 .composer-send:disabled { cursor: not-allowed; opacity: .5; background: transparent; color: var(--ink-3); }
 .turn-retry { flex: 0 0 auto; }
+
+/* item 4: sticky within .turns itself — always sits at the bottom of the
+   visible scroll area with no need to measure the composer's height. */
+.jump-latest { position: sticky; bottom: 4px; align-self: center; z-index: 5;
+  border: 1px solid var(--line); border-radius: var(--r-pill); background: var(--surface);
+  color: var(--ink-2); font-size: 11px; padding: 5px 12px; cursor: pointer;
+  box-shadow: var(--sh-float); font-family: inherit; }
+.jump-latest:hover { color: var(--ink); border-color: var(--line-strong); }
+
+/* ============ item 2: conversation switcher (rail header) ============ */
+.conv-switcher-wrap { flex: 1 1 auto; display: flex; align-items: center; gap: 2px; min-width: 0; }
+.conv-switcher-btn { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 4px;
+  border: none; background: transparent; cursor: pointer; font-family: inherit; padding: 4px 6px;
+  border-radius: 6px; text-align: left; }
+.conv-switcher-btn:hover { background: var(--surface-3); }
+.conv-switcher-title { font-size: 14px; font-weight: 500; color: var(--ink); overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.conv-switcher-chevron { font-size: 11px; color: var(--ink-3); flex: 0 0 auto; }
+.conv-switcher-new { flex: 0 0 auto; width: 22px; height: 22px; border: none; background: transparent;
+  color: var(--ink-2); font-size: 15px; line-height: 1; border-radius: 6px; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center; }
+.conv-switcher-new:hover { color: var(--ink); background: var(--surface-3); }
+.conv-menu { position: absolute; top: 100%; left: 14px; right: 14px; margin-top: 6px; z-index: 20;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+  box-shadow: var(--sh-float); padding: 6px; max-height: 320px; overflow-y: auto; }
+.conv-menu-empty { font-size: 12px; color: var(--ink-3); padding: 10px 8px; text-align: center; }
+.conv-row { display: flex; align-items: center; gap: 4px; border-radius: 8px; padding: 2px; }
+.conv-row:hover { background: var(--surface-2); }
+.conv-row.active .conv-row-title { color: var(--brand); }
+.conv-row-main { flex: 1 1 auto; min-width: 0; padding: 6px 8px; cursor: pointer; }
+.conv-row-title { font-size: 13px; color: var(--ink); overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+.conv-row-meta { font-size: 11px; color: var(--ink-3); margin-top: 1px; }
+.conv-row-action { flex: 0 0 auto; width: 24px; height: 24px; border: none; background: transparent;
+  color: var(--ink-3); font-size: 12px; border-radius: 6px; cursor: pointer; display: inline-flex;
+  align-items: center; justify-content: center; }
+.conv-row-action:hover { color: var(--ink); background: var(--surface-3); }
+.conv-row-edit { flex: 1 1 auto; min-width: 0; font: inherit; font-size: 13px; color: var(--ink);
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: 6px; padding: 5px 7px; }
+
+/* item 2: graph-fingerprint staleness — a one-line notice, never a block */
+.stale-notice { flex: 0 0 auto; font-size: 11.5px; color: var(--ink-2); background: var(--surface-2);
+  border-radius: 8px; padding: 6px 10px; margin: 4px 0 8px; }
