@@ -6,15 +6,18 @@ One process, four roles (see STUDIO.md §2):
   3. supervisor of the TS agent child process (spawn/stdin/stdout/kill);
   4. repository file watcher — later.
 
-The source of truth is FILES, not process memory: everything lives under
-``<repo>/.mindvibe/studio/``:
+The source of truth is FILES, not process memory — but per the storage
+amendment, none of them live in the analyzed repo. Everything lives under the
+tool's own storage root, in that repo's project directory (see
+:mod:`mindgraph.store`, ``Project``):
 
-    layout.json            # node positions moved by hand
-    studio.lock            # pid + port (second-instance guard)
+    graph.json              # the built graph
+    layout.json              # node positions moved by hand
+    studio.lock               # pid + port (second-instance guard)
     sessions/<id>/
-        meta.json          # state, scope, prompt, plan, verdict
-        events.jsonl       # what the agent writes (format already exists)
-        worktree/          # the execution branch
+        meta.json             # state, scope, prompt, plan, verdict
+        events.jsonl          # what the agent writes (format already exists)
+        worktree/             # the execution branch
 
 The studio is a read-through view over these files. If the process is killed and
 restarted, it resumes the last unfinished session from ``meta.json``.
@@ -39,7 +42,9 @@ import time
 import uuid
 import webbrowser
 
-from .serve import spa_fallback, viewer_dir
+from .serve import (spa_fallback, viewer_dir, cache_control_for,
+                    prepare_conditional_headers, read_build_id)
+from . import store
 
 # Session states (STUDIO.md §3).
 STATE_IDLE = "idle"
@@ -53,16 +58,17 @@ STATE_ABORTED = "aborted"
 
 _TERMINAL = {STATE_REVIEW, STATE_APPLIED, STATE_FAILED, STATE_ABORTED}
 
-_STUDIO_DIRNAME = "studio"
 _MAX_PLAN_NODES = 3  # STUDIO.md §7: block Run if the plan touches more than 3 nodes.
 
 
 def studio_dir(repo_root: str) -> str:
-    return os.path.join(os.path.abspath(repo_root), ".mindvibe", _STUDIO_DIRNAME)
+    """The project's storage root (see ``store.py``) — studio's own state
+    (layout, lock, sessions) lives here now, never inside the analyzed repo."""
+    return store.resolve_project(repo_root, touch=False).root
 
 
 def graph_path(repo_root: str) -> str:
-    return os.path.join(os.path.abspath(repo_root), ".mindgraph", "graph.json")
+    return store.resolve_project(repo_root, touch=False).graph_path
 
 
 def graph_version(repo_root: str) -> str:
@@ -274,6 +280,173 @@ def list_sessions(repo_root: str) -> list:
         out.append(meta)
     out.sort(key=lambda m: m.get("created_at", 0))
     return out
+
+
+# --- conversations (multiple, persistent, per-project — item 2) -------------
+#
+# A conversation groups an ordered list of turns (existing plan/execute
+# sessions, unchanged) under one persistent, titled, switchable id. The
+# turn machinery above (create_session/write_session/events.jsonl) is not
+# touched — a conversation just remembers which session ids belong to it.
+
+
+def _project(repo_root: str) -> "store.Project":
+    return store.resolve_project(repo_root, touch=False)
+
+
+def _active_conversation_path(repo_root: str) -> str:
+    return os.path.join(studio_dir(repo_root), "active_conversation")
+
+
+def get_active_conversation_id(repo_root: str) -> str | None:
+    try:
+        with open(_active_conversation_path(repo_root), encoding="utf-8") as fh:
+            cid = fh.read().strip()
+    except OSError:
+        return None
+    return cid or None
+
+
+def set_active_conversation_id(repo_root: str, cid: str) -> None:
+    path = _active_conversation_path(repo_root)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(cid)
+
+
+def list_conversations_api(repo_root: str) -> dict:
+    return {"conversations": store.list_conversations(_project(repo_root)),
+           "active_id": get_active_conversation_id(repo_root)}
+
+
+def new_conversation_api(repo_root: str) -> dict:
+    conv = store.new_conversation(_project(repo_root), None,
+                                  graph_fingerprint=graph_version(repo_root))
+    set_active_conversation_id(repo_root, conv["id"])
+    return conv
+
+
+def ensure_active_conversation(repo_root: str, first_message: str | None = None) -> dict:
+    """The active conversation, creating one if none is active (or the
+    recorded active id was deleted from under us)."""
+    project = _project(repo_root)
+    cid = get_active_conversation_id(repo_root)
+    if cid:
+        conv = store.read_conversation(project, cid)
+        if conv is not None:
+            return conv
+    conv = store.new_conversation(project, first_message,
+                                  graph_fingerprint=graph_version(repo_root))
+    set_active_conversation_id(repo_root, conv["id"])
+    return conv
+
+
+def switch_conversation_api(repo_root: str, cid: str) -> dict | None:
+    conv = store.read_conversation(_project(repo_root), cid)
+    if conv is None:
+        return None
+    set_active_conversation_id(repo_root, cid)  # never touches graph/layout
+    return conv
+
+
+def get_conversation_api(repo_root: str, cid: str) -> dict | None:
+    project = _project(repo_root)
+    conv = store.read_conversation(project, cid)
+    if conv is None:
+        return None
+    turns = []
+    for sid in conv.get("session_ids", []):
+        meta = read_session(repo_root, sid)
+        if meta is None:
+            continue
+        meta = dict(meta)
+        meta["events"] = _session_events(repo_root, sid)
+        turns.append(meta)
+    out = dict(conv)
+    out["turns"] = turns
+    fp = conv.get("graph_fingerprint")
+    out["stale"] = fp is not None and fp != graph_version(repo_root)
+    return out
+
+
+def rename_conversation_api(repo_root: str, cid: str, title: str) -> dict | None:
+    return store.rename_conversation(_project(repo_root), cid, title)
+
+
+def delete_conversation_api(repo_root: str, cid: str) -> bool:
+    ok = store.delete_conversation(_project(repo_root), cid)
+    if ok and get_active_conversation_id(repo_root) == cid:
+        try:
+            os.remove(_active_conversation_path(repo_root))
+        except OSError:
+            pass
+    return ok
+
+
+def append_turn_to_conversation(repo_root: str, conv_id: str, session_id: str,
+                                prompt: str | None = None) -> None:
+    """Called once a turn starts — write immediately (not only on exit): a
+    crashed process must not lose the conversation (item 2)."""
+    project = _project(repo_root)
+    conv = store.read_conversation(project, conv_id)
+    if conv is None:
+        return
+    ids = conv.setdefault("session_ids", [])
+    if session_id not in ids:
+        ids.append(session_id)
+    if conv.get("title") in (None, "New conversation") and not ids[:-1] and prompt:
+        conv["title"] = store._slug_title(prompt)
+    store.write_conversation(project, conv)
+
+
+# --- memory: global (all projects) + project (this codebase only) — item 3b -
+
+def memory_read_api(repo_root: str, scope: str) -> str:
+    path = store.global_memory_path() if scope == "global" else _project(repo_root).memory_path
+    return store.read_memory(path)
+
+
+def memory_write_api(repo_root: str, scope: str, content: str) -> None:
+    path = store.global_memory_path() if scope == "global" else _project(repo_root).memory_path
+    store.write_memory(path, content)
+
+
+def memory_clear_api(repo_root: str, scope: str) -> None:
+    if scope == "global":
+        store.clear_global_memory()
+    else:
+        store.clear_project_memory(_project(repo_root))
+
+
+def memory_remember_api(repo_root: str, scope: str, line: str) -> str:
+    """Append one durable-fact line via the agent's explicit ``remember``
+    tool. Returns the exact text written, so the feed event/Undo shows it
+    verbatim (item 3b)."""
+    path = store.global_memory_path() if scope == "global" else _project(repo_root).memory_path
+    cap = store.MEMORY_CAP_GLOBAL_TOKENS if scope == "global" else store.MEMORY_CAP_PROJECT_TOKENS
+    entry = store.append_memory(path, line)
+    # "the agent consolidates rather than truncating" — flagged here for the
+    # caller (studio's HTTP layer) to surface; the actual consolidation call
+    # (an LLM summarization pass) is the agent's own follow-up action, not
+    # done silently by the storage layer.
+    return entry
+
+
+def memory_remember_undo_api(repo_root: str, scope: str, line: str) -> bool:
+    """Best-effort Undo for the feed's remember event: removes the entry if
+    it is still the LAST line (a later append or edit means "undo" would
+    clobber someone else's change, so it refuses instead)."""
+    path = store.global_memory_path() if scope == "global" else _project(repo_root).memory_path
+    content = store.read_memory(path)
+    entry = line if line.endswith("\n") else line + "\n"
+    if not content.endswith(entry):
+        return False
+    store.write_memory(path, content[: -len(entry)])
+    return True
+
+
+def data_summary_api(repo_root: str) -> dict:
+    return store.data_summary(_project(repo_root))
 
 
 def _graph(repo_root: str) -> dict:
@@ -608,6 +781,24 @@ def _run_agent(repo_root: str, session_id: str, *, plan: bool,
         wt = make_worktree(repo_root, session_id)
         cmd += ["--worktree", wt]
 
+    # item 3: memory + a compacted summary of this conversation's earlier
+    # turns, written once per turn (a fresh agent process otherwise has no
+    # notion of "prior conversation" at all).
+    conv_id = (read_session(repo_root, session_id) or {}).get("conversation_id")
+    if conv_id:
+        project = _project(repo_root)
+        conv = store.read_conversation(project, conv_id)
+        if conv:
+            prior_ids = [s for s in conv.get("session_ids", []) if s != session_id]
+            prior_turns = [m for m in (read_session(repo_root, s) for s in prior_ids) if m]
+            context_text = store.build_turn_context(project, prior_turns)
+            if context_text:
+                ctx_path = os.path.join(_sessions_dir(repo_root), session_id, "context.txt")
+                os.makedirs(os.path.dirname(ctx_path), exist_ok=True)
+                with open(ctx_path, "w", encoding="utf-8") as fh:
+                    fh.write(context_text)
+                cmd += ["--context-file", ctx_path]
+
     _append_event(repo_root, session_id, {"type": "session.started",
                                           "scope_node_id": scope_node_id})
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -710,7 +901,7 @@ def start_execute(repo_root: str, session_id: str, scope_node_id: str | None = N
 
 # --- HTTP --------------------------------------------------------------------
 
-def _make_handler(repo_root: str):
+def _make_handler(repo_root: str, dev: bool = False):
     graph_file = graph_path(repo_root)
 
     # Effective provider/model (mindgraph.toml / MINDGRAPH_* / defaults) — the
@@ -835,10 +1026,14 @@ def _make_handler(repo_root: str):
         # --- POST ---------------------------------------------------------
         def api_plan(self):
             body = self._read_body()
-            sid = create_session(repo_root, body.get("scope_node_id"),
-                                 body.get("prompt") or "")
+            prompt = body.get("prompt") or ""
+            sid = create_session(repo_root, body.get("scope_node_id"), prompt)
+            conv = ensure_active_conversation(repo_root, first_message=prompt)
+            append_turn_to_conversation(repo_root, conv["id"], sid, prompt=prompt)
+            write_session(repo_root, sid, conversation_id=conv["id"])
             start_plan(repo_root, sid)
-            self._send_json({"session_id": sid, "state": read_state(repo_root)})
+            self._send_json({"session_id": sid, "conversation_id": conv["id"],
+                             "state": read_state(repo_root)})
 
         def api_run(self):
             body = self._read_body()
@@ -918,8 +1113,105 @@ def _make_handler(repo_root: str):
                 write_session(repo_root, sid, plan=None, plan_blocked=False)
             self._send_json({"ok": True, "state": read_state(repo_root)})
 
+        # --- conversations (item 2) ----------------------------------------
+        def api_conversations_get(self):
+            self._send_json(list_conversations_api(repo_root))
+
+        def api_conversations_post(self):
+            self._send_json(new_conversation_api(repo_root))
+
+        def api_conversation_get(self):
+            cid = self._query().get("id")
+            conv = get_conversation_api(repo_root, cid) if cid else None
+            if conv is None:
+                self._send_json({"error": "unknown conversation"}, status=404)
+                return
+            self._send_json(conv)
+
+        def api_conversation_switch(self):
+            body = self._read_body()
+            conv = switch_conversation_api(repo_root, body.get("conversation_id"))
+            if conv is None:
+                self._send_json({"error": "unknown conversation"}, status=404)
+                return
+            self._send_json({"ok": True, "conversation": conv})
+
+        def api_conversation_rename(self):
+            body = self._read_body()
+            title = (body.get("title") or "").strip()
+            if not title:
+                self._send_json({"error": "title required"}, status=400)
+                return
+            conv = rename_conversation_api(repo_root, body.get("conversation_id"), title)
+            if conv is None:
+                self._send_json({"error": "unknown conversation"}, status=404)
+                return
+            self._send_json({"ok": True, "conversation": conv})
+
+        def api_conversation_delete(self):
+            body = self._read_body()
+            ok = delete_conversation_api(repo_root, body.get("conversation_id"))
+            self._send_json({"ok": ok})
+
+        # --- memory (item 3b) + data (settings "Data" section) --------------
+        def api_memory_get(self):
+            scope = self._query().get("scope", "project")
+            self._send_json({"scope": scope, "content": memory_read_api(repo_root, scope)})
+
+        def api_memory_post(self):
+            body = self._read_body()
+            scope = body.get("scope", "project")
+            memory_write_api(repo_root, scope, body.get("content") or "")
+            self._send_json({"ok": True})
+
+        def api_memory_clear(self):
+            body = self._read_body()
+            memory_clear_api(repo_root, body.get("scope", "project"))
+            self._send_json({"ok": True})
+
+        def api_remember(self):
+            body = self._read_body()
+            scope = body.get("scope", "project")
+            line = (body.get("line") or "").strip()
+            if not line:
+                self._send_json({"error": "line required"}, status=400)
+                return
+            entry = memory_remember_api(repo_root, scope, line)
+            self._send_json({"ok": True, "scope": scope, "line": entry})
+
+        def api_remember_undo(self):
+            body = self._read_body()
+            ok = memory_remember_undo_api(repo_root, body.get("scope", "project"),
+                                          body.get("line") or "")
+            self._send_json({"ok": ok})
+
+        def api_data_get(self):
+            self._send_json(data_summary_api(repo_root))
+
+        def api_data_clear(self):
+            body = self._read_body()
+            target = body.get("target")
+            project = _project(repo_root)
+            if target == "project_memory":
+                store.clear_project_memory(project)
+            elif target == "global_memory":
+                store.clear_global_memory()
+            elif target == "conversations":
+                store.delete_all_conversations(project)
+            elif target == "graph":
+                store.delete_graph(project)
+            elif target == "project":
+                store.delete_project(project.id)
+            elif target == "all":
+                store.delete_all_data()
+            else:
+                self._send_json({"error": "unknown target"}, status=400)
+                return
+            self._send_json({"ok": True})
+
         # --- routing ------------------------------------------------------
         def do_GET(self):
+            prepare_conditional_headers(self, dev)
             path = self.path.split("?", 1)[0]
             if path == "/api/graph":
                 self.api_graph()
@@ -933,6 +1225,14 @@ def _make_handler(repo_root: str):
                 self.api_layout_get()
             elif path == "/api/sessions":
                 self.api_sessions()
+            elif path == "/api/conversations":
+                self.api_conversations_get()
+            elif path == "/api/conversation":
+                self.api_conversation_get()
+            elif path == "/api/memory":
+                self.api_memory_get()
+            elif path == "/api/data":
+                self.api_data_get()
             elif spa_fallback(self):
                 return
             else:
@@ -956,6 +1256,24 @@ def _make_handler(repo_root: str):
                 self.api_nodes()
             elif path == "/api/layout":
                 self.api_layout_post()
+            elif path == "/api/conversations":
+                self.api_conversations_post()
+            elif path == "/api/conversations/switch":
+                self.api_conversation_switch()
+            elif path == "/api/conversations/rename":
+                self.api_conversation_rename()
+            elif path == "/api/conversations/delete":
+                self.api_conversation_delete()
+            elif path == "/api/memory":
+                self.api_memory_post()
+            elif path == "/api/memory/clear":
+                self.api_memory_clear()
+            elif path == "/api/remember":
+                self.api_remember()
+            elif path == "/api/remember/undo":
+                self.api_remember_undo()
+            elif path == "/api/data/clear":
+                self.api_data_clear()
             else:
                 self._send_json({"error": "not found"}, status=404)
 
@@ -963,6 +1281,14 @@ def _make_handler(repo_root: str):
             if path.split("?", 1)[0] == "/graph.json":
                 return graph_file
             return super().translate_path(path)
+
+        def end_headers(self):
+            # The ONE place Cache-Control is decided — see serve.py's
+            # cache_control_for docstring: every server in this codebase
+            # (this one, the dev viewer, and the packaged wheel — same
+            # function) shares it, so it cannot diverge between them.
+            self.send_header("Cache-Control", cache_control_for(self.path, dev))
+            super().end_headers()
 
         def log_message(self, fmt, *args):
             pass
@@ -975,19 +1301,20 @@ class _StudioTCPServer(socketserver.ThreadingTCPServer):
     daemon_threads = True
 
 
-def make_server(repo_root: str, port: int = 5173):
+def make_server(repo_root: str, port: int = 5173, dev: bool = False):
     repo_root = os.path.abspath(repo_root)
     if not os.path.exists(graph_path(repo_root)):
         raise FileNotFoundError(
             f"{graph_path(repo_root)} not found — run `mindgraph scan <repo>` first")
-    return _StudioTCPServer(("127.0.0.1", port), _make_handler(repo_root))
+    return _StudioTCPServer(("127.0.0.1", port), _make_handler(repo_root, dev=dev))
 
 
 def run(repo_root: str, port: int = 5173, open_browser: bool = True,
-        watch: bool = True) -> None:
-    httpd = make_server(repo_root, port=port)
+        watch: bool = True, dev: bool = False) -> None:
+    httpd = make_server(repo_root, port=port, dev=dev)
     url = f"http://127.0.0.1:{httpd.server_address[1]}/"
     print(f"studio: {url}  (Ctrl+C to stop)")
+    print(f"mindgraph: build {read_build_id()}" + ("  [dev: no caching]" if dev else ""))
 
     if watch:
         # File watcher (STUDIO.md §10): rebuild graph.json when the code

@@ -6,6 +6,7 @@ every response carrying ``graph_version`` so the client can detect staleness.
 
 import json
 import os
+import re
 import threading
 import urllib.error
 import urllib.request
@@ -15,16 +16,22 @@ import pytest
 from mindgraph import studio
 
 
+@pytest.fixture(autouse=True)
+def _isolated_data_home(tmp_path_factory, monkeypatch):
+    # Storage amendment: graph.json/sessions/layout now live in the tool's own
+    # XDG-style storage root (store.py), never inside the analyzed repo —
+    # isolate it per test so tests don't collide with (or pollute) the real
+    # user data dir.
+    monkeypatch.setenv("MINDGRAPH_DATA_HOME", str(tmp_path_factory.mktemp("data")))
+
+
 @pytest.fixture()
 def repo(tmp_path):
-    graph_dir = tmp_path / ".mindgraph"
-    graph_dir.mkdir()
-    (graph_dir / "graph.json").write_text(
-        json.dumps({"version": 1, "repo": {"name": "test"},
-                    "nodes": [{"id": "n_auth", "name": "auth", "files": []}],
-                    "domains": [], "symbols": [], "node_edges": [],
-                    "stats": {"external": []}}), encoding="utf-8"
-    )
+    studio._write_json(studio.graph_path(str(tmp_path)),
+                       {"version": 1, "repo": {"name": "test"},
+                        "nodes": [{"id": "n_auth", "name": "auth", "files": []}],
+                        "domains": [], "symbols": [], "node_edges": [],
+                        "stats": {"external": []}})
     return str(tmp_path)
 
 
@@ -43,6 +50,11 @@ def server(repo):
 def _get(port, path):
     with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=5) as r:
         return r.status, r.read()
+
+
+def _get_headers(port, path):
+    with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=5) as r:
+        return r.status, dict(r.headers)
 
 
 def test_api_graph_returns_graph_and_version(server):
@@ -77,7 +89,54 @@ def test_api_events_is_sse(server):
 def test_studio_static_served(server):
     status, body = _get(server, "/")
     assert status == 200
-    assert b"dist/app.js" in body
+    assert re.search(rb"/dist/app\.[0-9a-f]{10}\.js", body)
+
+
+# --- caching hardening pass: studio.py shares serve.py's ONE cache policy ---
+
+def _hashed_js_path(body: bytes) -> str:
+    m = re.search(rb"/dist/(app\.[0-9a-f]{10}\.js)", body)
+    assert m, "no hashed app.<hash>.js reference in index.html"
+    return "/dist/" + m.group(1).decode()
+
+
+def test_studio_index_html_is_no_store(server):
+    status, headers = _get_headers(server, "/")
+    assert status == 200
+    assert headers.get("Cache-Control") == "no-store"
+
+
+def test_studio_hashed_asset_is_immutable(server):
+    _, body = _get(server, "/")
+    status, headers = _get_headers(server, _hashed_js_path(body))
+    assert status == 200
+    assert headers.get("Cache-Control") == "public, max-age=31536000, immutable"
+
+
+def test_studio_api_response_is_no_store(server):
+    status, headers = _get_headers(server, "/api/state")
+    assert status == 200
+    assert headers.get("Cache-Control") == "no-store"
+
+
+def test_studio_graph_json_is_no_store(server):
+    status, headers = _get_headers(server, "/graph.json")
+    assert status == 200
+    assert headers.get("Cache-Control") == "no-store"
+
+
+def test_studio_dev_mode_disables_hashed_asset_caching(repo):
+    httpd = studio.make_server(repo, port=0, dev=True)
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        _, body = _get(port, "/")
+        status, headers = _get_headers(port, _hashed_js_path(body))
+        assert status == 200
+        assert headers.get("Cache-Control") == "no-store"
+    finally:
+        httpd.shutdown(); httpd.server_close(); thread.join(timeout=5)
 
 
 def test_state_reflects_open_session(repo):
@@ -283,13 +342,12 @@ def test_api_diff_records_diff_seen(server, repo):
 def test_api_rebuild_recomputes_and_returns_new_version(server, repo, monkeypatch):
     def fake_recompute(root):
         # Simulate a full scan: rewrite graph.json so graph_version changes.
-        path = os.path.join(root, ".mindgraph", "graph.json")
-        with open(path, "w", encoding="utf-8") as fh:
-            json.dump({"version": 1, "repo": {"name": "test"},
-                       "nodes": [{"id": "n_auth", "name": "auth", "files": []}],
-                       "domains": [], "symbols": [], "node_edges": [],
-                       "stats": {"external": []},
-                       "extra": "rebuilt"}, fh)
+        studio._write_json(studio.graph_path(root),
+                           {"version": 1, "repo": {"name": "test"},
+                            "nodes": [{"id": "n_auth", "name": "auth", "files": []}],
+                            "domains": [], "symbols": [], "node_edges": [],
+                            "stats": {"external": []},
+                            "extra": "rebuilt"})
         return "ok"
 
     monkeypatch.setattr(studio, "run_recompute", fake_recompute)
@@ -344,9 +402,7 @@ def test_api_nodes_names_area_and_recomputes(server, repo, monkeypatch):
              "domains": [], "node_edges": [],
              "symbols": [{"id": "app.x.helper", "file": "app/x.py", "node": "Unassigned"}],
              "stats": {"external": []}}
-    path = os.path.join(repo, ".mindgraph", "graph.json")
-    with open(path, "w", encoding="utf-8") as fh:
-        json.dump(graph, fh)
+    studio._write_json(studio.graph_path(repo), graph)
 
     calls = []
     monkeypatch.setattr(studio, "run_recompute",

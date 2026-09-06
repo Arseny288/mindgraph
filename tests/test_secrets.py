@@ -2,7 +2,7 @@
 
 The LLM key is read ONLY from the environment (.env in cli.py is only loaded
 into env). Explicit check: the key value (marker) never lands in graph.json, in
-the raw responses in .mindgraph/runs/ and in session logs/artifacts.
+the raw responses in the project's runs/ dir and in session logs/artifacts.
 """
 
 import json
@@ -10,7 +10,7 @@ import os
 
 import pytest
 
-from mindgraph import emit
+from mindgraph import emit, store
 
 MARKER = "sk-marker-secret-do-not-leak-0000"
 
@@ -42,9 +42,11 @@ def _assert_marker_absent(text, where):
 
 def test_secret_absent_from_graph_json_and_runs(monkeypatch, tmp_path):
     monkeypatch.setenv("DEEPSEEK_API_KEY", MARKER)
+    monkeypatch.setenv("MINDGRAPH_DATA_HOME", str(tmp_path / "_data"))
     monkeypatch.setattr(emit, "make_provider", _FakeProvider)
 
-    # Copy the fixture to tmp so as not to litter .mindgraph in the test tree.
+    # Copy the fixture to tmp — graph.json/runs/ land in the isolated XDG
+    # storage root above, never inside this repo copy.
     import shutil
     root = str(tmp_path / "repo")
     shutil.copytree(FIXTURE, root)
@@ -58,7 +60,7 @@ def test_secret_absent_from_graph_json_and_runs(monkeypatch, tmp_path):
     with open(emit.graph_path(root), encoding="utf-8") as fh:
         _assert_marker_absent(fh.read(), "written graph.json")
 
-    runs_dir = os.path.join(root, ".mindgraph", "runs")
+    runs_dir = os.path.join(store.resolve_project(root, touch=False).root, "runs")
     if os.path.isdir(runs_dir):
         for name in os.listdir(runs_dir):
             with open(os.path.join(runs_dir, name), encoding="utf-8") as fh:

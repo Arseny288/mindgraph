@@ -21,10 +21,14 @@ import hashlib
 import json
 import os
 
+from . import store
+
 
 def load_graph(root: str) -> dict:
-    """Read ``<root>/.mindgraph/graph.json`` (the emit.py contract)."""
-    path = os.path.join(os.path.abspath(root), ".mindgraph", "graph.json")
+    """Read the project's built graph.json (see :mod:`mindgraph.store` —
+    the storage amendment: it lives under the tool's own storage root, never
+    inside the analyzed repo)."""
+    path = store.resolve_project(root, touch=False).graph_path
     with open(path, encoding="utf-8") as fh:
         return json.load(fh)
 

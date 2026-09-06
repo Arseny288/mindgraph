@@ -17,6 +17,26 @@ FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                        "fixtures", "sample_repo")
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _scanned_fixture():
+    """The CLI tests below (``graph``/``boundary``/``verify``) read an already
+    -built graph.json rather than building it themselves — scan once, into an
+    isolated storage root (storage amendment: graph.json lives in the tool's
+    own XDG-style root now, never inside the fixture repo)."""
+    import tempfile
+    old = os.environ.get("MINDGRAPH_DATA_HOME")
+    os.environ["MINDGRAPH_DATA_HOME"] = tempfile.mkdtemp(prefix="mindgraph_test_data_")
+    try:
+        subprocess.run([sys.executable, "-m", "mindgraph.cli", "scan", FIXTURE, "--no-llm"],
+                       capture_output=True, text=True, check=True)
+        yield
+    finally:
+        if old is None:
+            os.environ.pop("MINDGRAPH_DATA_HOME", None)
+        else:
+            os.environ["MINDGRAPH_DATA_HOME"] = old
+
+
 @pytest.fixture()
 def graph():
     return emit.build_graph(FIXTURE, no_llm=True)
@@ -106,10 +126,10 @@ def test_verify_in_zone_no_change_is_ok(graph, tmp_path):
         "from .tokens import issue\n"
         "from common import utils\n\n\n"
         "def verify_token(t: str) -> bool:\n"
-        "    \"\"\"Проверяет токен.\"\"\"\n"
+        "    \"\"\"Verifies the token.\"\"\"\n"
         "    return len(t) > 0\n\n\n"
         "def login(username: str, password: str) -> str:\n"
-        "    \"\"\"Логинит пользователя и возвращает токен.\"\"\"\n"
+        "    \"\"\"Logs the user in and returns a token.\"\"\"\n"
         "    name = utils.normalize(username)\n"
         "    return issue(len(name) + 0)\n"))
     diff = ("diff --git a/auth/login.py b/auth/login.py\n"
@@ -126,7 +146,7 @@ def test_verify_contract_signature_change_is_violation(graph, tmp_path):
         "import os\n\n"
         "CACHE = {}\n\n\n"
         "def hash_value(v: str, salt: str = \"\") -> str:\n"
-        "    \"\"\"Хеширует значение.\"\"\"\n"
+        "    \"\"\"Hashes the value.\"\"\"\n"
         "    return str(len(v))\n\n\n"
         "def normalize(s: str) -> str:\n"
         "    return s.strip().lower()\n"))

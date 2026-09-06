@@ -28,6 +28,7 @@ import sys
 
 from . import emit, llmcache, model, verify as verify_mod, testselect, impact as impact_mod
 from . import __version__
+from . import store
 from .config import resolve_config
 from .group import PROVIDERS, DEEPSEEK_MODEL, ANTHROPIC_MODEL
 
@@ -114,6 +115,14 @@ def _load_graph(dir_: str) -> dict:
         sys.exit(EXIT_RUNTIME)
 
 
+def _dev_mode(args) -> bool:
+    """Caching hardening pass, item 5: dev mode disables ALL caching (even
+    on hashed /dist/ assets) so a rebuild is always picked up without a hard
+    refresh. ``--dev`` on the command, or ``MINDGRAPH_DEV=1`` for a
+    standing default (e.g. exported in a viewer-development shell)."""
+    return bool(getattr(args, "dev", False)) or os.environ.get("MINDGRAPH_DEV") == "1"
+
+
 def _resolve_config(root: str, args) -> "object":
     config = resolve_config(root, explicit_path=getattr(args, "config", None))
     if getattr(args, "provider", None) is not None:
@@ -178,7 +187,8 @@ def _cmd_scan(args) -> int:
         _print_stats(graph)
     if args.serve:
         from . import serve
-        serve.run(root, port=config.port, open_browser=config.open_browser)
+        serve.run(root, port=config.port, open_browser=config.open_browser,
+                  dev=_dev_mode(args))
     return EXIT_OK
 
 
@@ -378,6 +388,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("scan", help="build/update graph.json")
     p.add_argument("dir", nargs="?", default=".")
     p.add_argument("--serve", action="store_true")
+    p.add_argument("--dev", action="store_true",
+                   help="--serve: disable all caching (even hashed /dist/ assets) "
+                        "so a rebuild is always picked up without a hard refresh")
     p.add_argument("--stats", action="store_true")
     p.add_argument("--force", action="store_true")
     p.add_argument("--json", action="store_true")
@@ -440,8 +453,32 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-browser", action="store_true")
     p.add_argument("--no-watch", action="store_true",
                    help="disable the file watcher (auto-rebuild graph on save)")
+    p.add_argument("--dev", action="store_true",
+                   help="disable all caching (even hashed /dist/ assets) so a "
+                        "rebuild is always picked up without a hard refresh")
     p.add_argument("--fake-verdicts", action="store_true",
                    help="mock test verdicts in the real event format (phase 3 not ready)")
+
+    p = sub.add_parser("export",
+                       help="write this project's graph/memory/conversations to a directory")
+    p.add_argument("out_dir", help="destination directory (created if missing)")
+    p.add_argument("--dir", default=".", help="the analyzed repo (default: cwd)")
+
+    p = sub.add_parser("import",
+                       help="load a project's graph/memory/conversations from a directory "
+                            "(the inverse of export)")
+    p.add_argument("in_dir", help="source directory, as written by `export`")
+    p.add_argument("--dir", default=".", help="the analyzed repo (default: cwd)")
+
+    p = sub.add_parser("projects", help="list known projects (storage root)")
+    p.add_argument("--json", action="store_true")
+
+    p = sub.add_parser("remember",
+                       help="append one durable-fact line to project or global memory")
+    p.add_argument("--scope", choices=["global", "project"], default="project")
+    p.add_argument("--line", required=True, help="the fact to remember, one line")
+    p.add_argument("--dir", default=".", help="the analyzed repo (default: cwd)")
+    p.add_argument("--json", action="store_true")
 
     return ap
 
@@ -461,7 +498,66 @@ def _cmd_studio(args) -> int:
     config = _resolve_config(root, args)
     studio.run(root, port=args.port or config.port,
                open_browser=not args.no_browser,
-               watch=not args.no_watch)
+               watch=not args.no_watch, dev=_dev_mode(args))
+    return EXIT_OK
+
+
+def _cmd_export(args) -> int:
+    """Write this project's graph/memory/conversations to a directory the
+    user chooses (the storage amendment's answer to "data doesn't travel
+    with the repo") — an explicit action, never silent files in their tree."""
+    root = os.path.abspath(args.dir)
+    project = store.resolve_project(root, touch=False)
+    out = store.export_project(project, os.path.abspath(args.out_dir))
+    print(f"exported {project.display_name!r} to {out}", file=sys.stderr)
+    return EXIT_OK
+
+
+def _cmd_import(args) -> int:
+    """The inverse of ``export``: load graph/memory/conversations from a
+    directory into the project resolved for ``--dir``."""
+    root = os.path.abspath(args.dir)
+    in_dir = os.path.abspath(args.in_dir)
+    if not os.path.isdir(in_dir):
+        print(f"mindgraph: {args.in_dir!r} is not a directory", file=sys.stderr)
+        return EXIT_RUNTIME
+    project = store.import_project(root, in_dir)
+    print(f"imported into {project.display_name!r} ({project.root})", file=sys.stderr)
+    return EXIT_OK
+
+
+def _cmd_projects(args) -> int:
+    """List known projects under the storage root — path, whether it's still
+    on disk, and when it was last opened."""
+    projects = store.list_projects()
+    if args.json:
+        _out_json({"schema_version": SCHEMA_VERSION,
+                  "storage_root": store.data_root(),
+                  "projects": [
+                      {"id": p.id, "repo_path": p.repo_path,
+                       "display_name": p.display_name, "missing": p.missing,
+                       "last_opened": p.last_opened}
+                      for p in projects]})
+        return EXIT_OK
+    print(f"storage root: {store.data_root()}")
+    for p in projects:
+        flag = " (missing)" if p.missing else ""
+        print(f"{p.id}  {p.repo_path}{flag}")
+    return EXIT_OK
+
+
+def _cmd_remember(args) -> int:
+    """The agent's explicit ``remember`` tool (item 3b): the ONLY way memory
+    gets written — never silently, never any other path."""
+    root = os.path.abspath(args.dir)
+    project = store.resolve_project(root, touch=False)
+    path = store.global_memory_path() if args.scope == "global" else project.memory_path
+    entry = store.append_memory(path, args.line)
+    if args.json:
+        _out_json({"schema_version": SCHEMA_VERSION, "ok": True,
+                  "scope": args.scope, "line": entry})
+    else:
+        print(f"remembered ({args.scope}): {entry.rstrip()}")
     return EXIT_OK
 
 
@@ -475,6 +571,10 @@ _DISPATCH = {
     "verify": _cmd_verify,
     "agent": _cmd_agent,
     "studio": _cmd_studio,
+    "export": _cmd_export,
+    "import": _cmd_import,
+    "projects": _cmd_projects,
+    "remember": _cmd_remember,
 }
 
 

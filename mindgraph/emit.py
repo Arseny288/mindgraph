@@ -6,11 +6,12 @@ everything is already computed here. extract.py/group.py/shared.py remain
 read-only analyzers; emit.py orchestrates them and decides what to write to disk
 and where.
 
-Cache: if ``<root>/.mindgraph/graph.json`` already exists and its
-``repo.repo_hash`` matches the current one — we reuse it without recomputing
-(unless ``--force``). ``repo_hash`` is a sha256 over (path, size, mtime) of the
-scanned .py files, not over their content: it is cheap, and as a "has not
-changed" signal it suffices.
+Cache: if the project's ``graph.json`` (see :mod:`mindgraph.store` — the
+storage amendment: nothing is written into the analyzed repo) already exists
+and its ``repo.repo_hash`` matches the current one — we reuse it without
+recomputing (unless ``--force``). ``repo_hash`` is a sha256 over (path, size,
+mtime) of the scanned .py files, not over their content: it is cheap, and as
+a "has not changed" signal it suffices.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ from .extract import extract_repo, _iter_python_files, _iter_ignore_files, _rel
 from .group import (group_repo, make_provider, node_map, UNASSIGNED_NODE,
                     _system_prompt, DEEPSEEK_MODEL, ANTHROPIC_MODEL)
 from . import manifest
+from . import store
 from .shared import node_of, compute_owners_by_node, ENTRY_POINT_PATTERNS, _is_entry_point
 
 log = logging.getLogger("mindgraph.emit")
@@ -36,7 +38,13 @@ GRAPH_VERSION = 2  # +domains, +domain_edges, +node.parent, +grouping (additive,
 
 
 def graph_path(root: str) -> str:
-    return os.path.join(os.path.abspath(root), ".mindgraph", "graph.json")
+    """The built graph's path — under the tool's own storage root (see
+    ``store.py``), never inside the analyzed repo."""
+    return store.resolve_project(root).graph_path
+
+
+def _runs_dir(root: str) -> str:
+    return os.path.join(store.resolve_project(root).root, "runs")
 
 
 def _resolve_model(provider_name: str, model: str | None) -> str:
@@ -114,11 +122,11 @@ def _slug(name: str) -> str:
 
 
 def _save_run(root: str, provider_name: str, node_count, result: dict) -> str:
-    """The raw model response in ``.mindgraph/runs/`` — grouping audit/debug:
+    """The raw model response in the project's ``runs/`` dir — grouping audit/debug:
     if the model sent invalid JSON or the layout "drifted", we can see exactly
     what it returned, without a repeated paid call.
     """
-    runs_dir = os.path.join(root, ".mindgraph", "runs")
+    runs_dir = _runs_dir(root)
     os.makedirs(runs_dir, exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")[:-3] + "Z"
     k = "auto" if node_count is None else str(node_count)
@@ -138,7 +146,7 @@ def _save_run(root: str, provider_name: str, node_count, result: dict) -> str:
 def _save_domain_run(root: str, provider_name: str, result: dict) -> str:
     """Like :func:`_save_run`, but for the second (domain) request — its own
     directory, so as not to mix up the raw responses of two different prompts."""
-    runs_dir = os.path.join(root, ".mindgraph", "runs")
+    runs_dir = _runs_dir(root)
     os.makedirs(runs_dir, exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")[:-3] + "Z"
     path = os.path.join(runs_dir, f"{ts}_{provider_name}_domains.json")
@@ -546,8 +554,8 @@ def load_or_build(root: str, provider_name: str = "deepseek", no_llm: bool = Fal
                   regenerate_descriptions: bool = False):
     """Return ``(graph, from_cache: bool)``. Writes to disk on recompute.
 
-    Cache-first: if ``repo_hash`` AND ``config_fingerprint`` in
-    ``.mindgraph/graph.json`` match the current ones and there is no
+    Cache-first: if ``repo_hash`` AND ``config_fingerprint`` in the project's
+    ``graph.json`` (see :func:`graph_path`) match the current ones and there is no
     ``--force``/``--regroup``/``--regenerate-descriptions`` — return the cache
     without recomputing. LLM-layout protection (§6): ``--no-llm`` (and an
     ordinary recompute on a changed hash without ``--regroup``) recomputes

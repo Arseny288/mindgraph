@@ -15,6 +15,24 @@ FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                        "fixtures", "sample_repo")
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _scanned_fixture():
+    """test_cli_node_output_byte_stable reads an already-built graph.json —
+    scan once, into an isolated storage root (storage amendment)."""
+    import tempfile
+    old = os.environ.get("MINDGRAPH_DATA_HOME")
+    os.environ["MINDGRAPH_DATA_HOME"] = tempfile.mkdtemp(prefix="mindgraph_test_data_")
+    try:
+        subprocess.run([sys.executable, "-m", "mindgraph.cli", "scan", FIXTURE, "--no-llm"],
+                       capture_output=True, text=True, check=True)
+        yield
+    finally:
+        if old is None:
+            os.environ.pop("MINDGRAPH_DATA_HOME", None)
+        else:
+            os.environ["MINDGRAPH_DATA_HOME"] = old
+
+
 @pytest.fixture()
 def graph():
     return emit.build_graph(FIXTURE, no_llm=True)

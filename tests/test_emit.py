@@ -9,18 +9,24 @@ import json
 import os
 import shutil
 import sys
+import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from mindgraph import emit
+# Storage amendment: graph.json/runs/ now live in the tool's own XDG-style
+# storage root (store.py), never inside the analyzed repo — isolate it here
+# so this test file doesn't touch (or get confused by) the real user data dir.
+os.environ["MINDGRAPH_DATA_HOME"] = tempfile.mkdtemp(prefix="mindgraph_test_data_")
+
+from mindgraph import emit, store
 
 FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                        "fixtures", "sample_repo")
 
 
 def _clean():
-    shutil.rmtree(os.path.join(FIXTURE, ".mindgraph"), ignore_errors=True)
+    shutil.rmtree(store.resolve_project(FIXTURE, touch=False).root, ignore_errors=True)
 
 
 def _graph():
@@ -241,19 +247,19 @@ def test_prompt_change_forces_recalc_of_existing_graph():
 
 def _write_llm_graph():
     """Write a graph.json with a fabricated LLM layout: all symbols into one
-    semantic node «Все смыслы» (instead of package-proxy)."""
+    semantic node "All Meanings" (instead of package-proxy)."""
     _clean()
     base = emit.build_graph(FIXTURE, no_llm=True)
     base["nodes"] = [{
-        "id": "n_all", "name": "Все смыслы", "summary": "Тестовый смысловой узел.",
+        "id": "n_all", "name": "All Meanings", "summary": "Test semantic node.",
         "symbols": sorted(s["id"] for s in base["symbols"]),
         "files": sorted({s["file"] for s in base["symbols"]}),
         "loc": sum(s["loc"] for s in base["symbols"]),
         "shared_count": 0, "parent": "d_all",
     }]
-    base["domains"] = [{"id": "d_all", "name": "Тестовый домен"}]
+    base["domains"] = [{"id": "d_all", "name": "Test domain"}]
     for s in base["symbols"]:
-        s["node"] = "Все смыслы"
+        s["node"] = "All Meanings"
     base["node_edges"] = []
     base["domain_edges"] = []
     base["grouping"] = "llm"
@@ -268,12 +274,12 @@ def test_no_llm_preserves_existing_llm_nodes():
     assert from_cache is False
     assert g["grouping"] == "llm"
     names = {n["name"] for n in g["nodes"]}
-    assert "Все смыслы" in names
+    assert "All Meanings" in names
     assert "auth" not in names  # did not fall back to package-proxy
     auth = next(s for s in g["symbols"] if s["id"] == "auth.login.verify_token")
-    assert auth["node"] == "Все смыслы"
-    all_node = next(n for n in g["nodes"] if n["name"] == "Все смыслы")
-    assert all_node["summary"] == "Тестовый смысловой узел."
+    assert auth["node"] == "All Meanings"
+    all_node = next(n for n in g["nodes"] if n["name"] == "All Meanings")
+    assert all_node["summary"] == "Test semantic node."
     assert all_node["parent"] == "d_all"  # domains are preserved too
 
 
@@ -284,7 +290,7 @@ def test_force_without_regroup_preserves_llm_nodes():
     g, from_cache = emit.load_or_build(FIXTURE, force=True)
     assert from_cache is False
     assert g["grouping"] == "llm"
-    assert "Все смыслы" in {n["name"] for n in g["nodes"]}
+    assert "All Meanings" in {n["name"] for n in g["nodes"]}
 
 
 def test_regroup_bypasses_cache():
@@ -295,6 +301,70 @@ def test_regroup_bypasses_cache():
     g2, from_cache = emit.load_or_build(FIXTURE, no_llm=True, regroup=True)
     assert from_cache is False
     assert g2["repo"]["generated_at"] != g1["repo"]["generated_at"]
+
+
+# --- preserve-path additions (README cache-first; STUDIO.md §10) -------------
+
+def _seed_llm_root(tmp_path):
+    """A one-node repo whose graph claims an LLM layout ("Core")."""
+    root = tmp_path / "repo"
+    (root / "app").mkdir(parents=True)
+    (root / "app" / "main.py").write_text("def main():\n    return 1\n",
+                                          encoding="utf-8")
+    root = str(root)
+    g = emit.build_graph(root, no_llm=True)
+    for n in g["nodes"]:
+        n["name"] = "Core"
+    for s in g["symbols"]:
+        s["node"] = "Core"
+    g["grouping"] = "llm"
+    g["node_edges"] = []
+    g["domain_edges"] = []
+    emit.write_graph(root, g)
+    return root
+
+
+def test_preserve_new_symbols_go_to_unassigned(tmp_path):
+    # A symbol that appeared since the last scan is NOT silently renamed to a
+    # package-proxy node: it lands in the "Unassigned" service node, and the
+    # file's <module> pseudo-symbol follows its real owner.
+    root = _seed_llm_root(tmp_path)
+    (tmp_path / "repo" / "app" / "newmod.py").write_text(
+        "def helper():\n    return 1\n", encoding="utf-8")
+
+    g, from_cache = emit.load_or_build(root, no_llm=True, force=True)
+    assert from_cache is False
+    assert g["grouping"] == "llm"
+    core = next(n for n in g["nodes"] if n["name"] == "Core")
+    un = next(n for n in g["nodes"] if n["name"] == "Unassigned")
+    assert "app.newmod.helper" in un["symbols"]
+    assert "app.main.main" in core["symbols"]
+    assert g["stats"]["unassigned"] == 1  # the real symbol; synthetic not counted
+
+
+def test_preserve_manifest_pins_new_file(tmp_path):
+    # When the user names an area (manifest own_paths), a brand-new file under
+    # it is assigned mechanically on the next recompute — no LLM call.
+    root = _seed_llm_root(tmp_path)
+    (tmp_path / "repo" / ".mindvibe").mkdir()
+    import yaml
+    (tmp_path / "repo" / ".mindvibe" / "nodes.yaml").write_text(
+        yaml.safe_dump({"nodes": [
+            {"id": "comms", "title": "Comms", "own_paths": ["app/comms/**"]}]},
+            sort_keys=False), encoding="utf-8")
+    (tmp_path / "repo" / "app" / "comms").mkdir(parents=True)
+    (tmp_path / "repo" / "app" / "comms" / "notify.py").write_text(
+        "def ping():\n    return 1\n", encoding="utf-8")
+
+    g, from_cache = emit.load_or_build(root, no_llm=True, force=True)
+    assert from_cache is False
+    names = {n["name"] for n in g["nodes"]}
+    assert "Comms" in names
+    comms = next(n for n in g["nodes"] if n["name"] == "Comms")
+    assert "app.comms.notify.ping" in comms["symbols"]
+    assert g["stats"]["unassigned"] == 0
+    core = next(n for n in g["nodes"] if n["name"] == "Core")
+    assert "app.main.main" in core["symbols"]
 
 
 def _run():
