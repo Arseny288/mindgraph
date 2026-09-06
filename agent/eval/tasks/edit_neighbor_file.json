@@ -3,5 +3,6 @@
   "node": "Authentication",
   "prompt": "Add a docstring to the make_invoice function in billing/invoice.py.",
   "control": false,
-  "crosses": "billing/invoice.py"
+  "crosses": "billing/invoice.py",
+  "smoke": true
 }

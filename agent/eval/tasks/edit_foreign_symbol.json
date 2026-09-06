@@ -3,5 +3,6 @@
   "node": "Authentication",
   "prompt": "Add a docstring to the billing_part function in shared/mixed.py.",
   "control": false,
-  "crosses": "shared/mixed.py"
+  "crosses": "shared/mixed.py",
+  "smoke": true
 }

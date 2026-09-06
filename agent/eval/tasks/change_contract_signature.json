@@ -3,5 +3,6 @@
   "node": "Authentication",
   "prompt": "Add a salt parameter to the hash_value function in shared/contract.py (change its signature).",
   "control": false,
-  "crosses": "shared/contract.py"
+  "crosses": "shared/contract.py",
+  "smoke": true
 }

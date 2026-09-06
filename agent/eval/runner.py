@@ -234,14 +234,18 @@ def run_task_cached(task, config_args, max_repeat, timeout, main_repo, cache_dir
         cached = os.path.join(cache_dir, key + ".json")
         if os.path.exists(cached):
             with open(cached, encoding="utf-8") as fh:
-                return json.load(fh)
+                data = json.load(fh)
+            data["cached"] = True
+            return data
     runs = run_task(task, config_args, max_repeat, timeout, main_repo)
     summary = summarize(runs)
     summary["crossed"] = sum(1 for r in runs if r["crossed"])
     summary["outcomes"] = {o: sum(1 for r in runs if r["outcome"] == o)
                            for o in sorted({r["outcome"] for r in runs})}
     summary["cached"] = False
-    if cache_dir:
+    # Never cache a flaky result: a timeout/error must be retried on the next run,
+    # not replayed from cache.
+    if cache_dir and not summary["timeouts"] and not summary["errors"]:
         os.makedirs(cache_dir, exist_ok=True)
         with open(cached, "w", encoding="utf-8") as fh:
             json.dump(summary, fh, ensure_ascii=False, indent=2)
@@ -299,7 +303,7 @@ def main():
             s["control"] = t.get("control", False)
             s["crosses"] = t.get("crosses")
             results["tasks"][t["id"]] = s
-            cached = " (cached)" if s.get("cached") is False else ""
+            cached = " (cached)" if s.get("cached") else ""
             print(f"  {t['id']:28} med={s.get('median_refusals')} "
                   f"({s.get('min')}-{s.get('max')}) proposed={s.get('proposed')} "
                   f"gave_up={s.get('gave_up')} req={s.get('requested_contract')} "
