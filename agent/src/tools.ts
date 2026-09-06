@@ -12,7 +12,7 @@ function text(content: string, details: any = {}) {
   return { content: [{ type: "text", text: content }], details };
 }
 
-export function buildTools(session: Session): AgentTool[] {
+function readOnlyTools(session: Session): AgentTool[] {
   return [
     {
       name: "list_nodes",
@@ -60,6 +60,58 @@ export function buildTools(session: Session): AgentTool[] {
       },
     },
     {
+      name: "run_tests",
+      label: "Run tests",
+      description:
+        "Run the zone's tests. The set is decided by mindgraph (tests --for-node); the agent does not choose and has no arbitrary shell.",
+      parameters: Type.Object({}),
+      async execute() {
+        const r = await session.runTests();
+        return text(JSON.stringify(r, null, 2));
+      },
+    },
+    {
+      name: "remember",
+      label: "Remember",
+      description:
+        "Append ONE durable fact about this codebase (or, scope=\"global\", about how the user always wants you to work) to memory that persists across conversations — conventions, how to run tests, landmines, decisions the user made. NOT conversation history, NOT a scratchpad: one short, durable line per call. Available in both planning and build mode.",
+      parameters: Type.Object({
+        line: Type.String({ description: "one durable fact, one line" }),
+        scope: Type.Optional(Type.Union([Type.Literal("project"), Type.Literal("global")], {
+          description: "\"project\" (default): this codebase only. \"global\": every codebase.",
+        })),
+      }),
+      async execute(_id, params) {
+        const r = await session.remember((params.scope as "global" | "project") ?? "project", params.line);
+        return text(JSON.stringify(r));
+      },
+    },
+  ];
+}
+
+function submitPlanTool(): AgentTool {
+  return {
+    name: "submit_plan",
+    label: "Submit plan",
+    description:
+      "Submit the plan for the task: the affected nodes, files, contracts and tests. Read-only — writes nothing. Ends the planning session.",
+    parameters: Type.Object({
+      nodes: Type.Array(Type.String(), { description: "affected node names/ids" }),
+      files: Type.Array(Type.String(), { description: "files to change" }),
+      contracts: Type.Array(Type.String(), { description: "contracts whose signature must change" }),
+      tests: Type.Array(Type.String(), { description: "tests to run" }),
+      summary: Type.String({ description: "one sentence describing the change" }),
+    }),
+    async execute(_id, params) {
+      return { ...text("plan submitted"), terminate: true, plan: params };
+    },
+  };
+}
+
+export function buildTools(session: Session): AgentTool[] {
+  return [
+    ...readOnlyTools(session),
+    {
       name: "edit_file",
       label: "Edit file",
       description:
@@ -88,17 +140,6 @@ export function buildTools(session: Session): AgentTool[] {
       },
     },
     {
-      name: "run_tests",
-      label: "Run tests",
-      description:
-        "Run the zone's tests. The set is decided by mindgraph (tests --for-node); the agent does not choose and has no arbitrary shell.",
-      parameters: Type.Object({}),
-      async execute() {
-        const r = await session.runTests();
-        return text(JSON.stringify(r, null, 2));
-      },
-    },
-    {
       name: "request_contract_change",
       label: "Request contract change",
       description:
@@ -113,4 +154,9 @@ export function buildTools(session: Session): AgentTool[] {
       },
     },
   ];
+}
+
+/** Read-only tool set + submit_plan — the planning mode (STUDIO.md §7). */
+export function buildPlanTools(session: Session): AgentTool[] {
+  return [...readOnlyTools(session), submitPlanTool()];
 }

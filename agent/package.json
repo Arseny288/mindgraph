@@ -5,13 +5,15 @@
   "type": "module",
   "description": "mindvibe agent: a graph-oriented agent with hard node boundaries (phase 2)",
   "scripts": {
-    "test": "node --test test/"
+    "test": "node --test test/",
+    "build": "node build.mjs"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "0.84.4",
     "@earendil-works/pi-ai": "0.84.4"
   },
   "devDependencies": {
+    "esbuild": "^0.25.0",
     "typescript": "^5.8.0"
   }
 }

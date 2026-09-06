@@ -182,4 +182,12 @@ export class Session {
     // Changes nothing: stops the session and surfaces the request to a human.
     return { terminate: true, symbol, rationale };
   }
+
+  /** item 3b: durable facts about this codebase (or, scope "global", about
+   * every codebase) — NOT conversation history. Project-wide; independent
+   * of the current node/zone/worktree. */
+  async remember(scope: "global" | "project", line: string): Promise<{ ok: true; scope: string; line: string }> {
+    const r = await this.client.remember(scope, line);
+    return { ok: true, scope: r.scope, line: r.line };
+  }
 }

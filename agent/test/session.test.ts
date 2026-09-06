@@ -36,6 +36,7 @@ function fakeClient(): MindGraphClient {
     testsForNode: async () => ({ schema_version: "1", status: "ok", tests: [] }),
     scan: async () => ({}),
     verify: async () => ({ data: { schema_version: "1", ok: true }, exitCode: 0, stderr: "" }),
+    remember: async (scope: string, line: string) => ({ schema_version: "1", ok: true, scope, line }),
   } as unknown as MindGraphClient;
 }
 
@@ -106,4 +107,18 @@ test("runTests returns the node verdict", async () => {
   await s.openNode("auth");
   const r = await s.runTests();
   assert.equal(r.status, "ok");
+});
+
+test("remember defaults to project scope and forwards the line", async () => {
+  const { s } = makeSession();
+  const r = await s.remember("project", "Run tests with pytest -q.");
+  assert.equal(r.ok, true);
+  assert.equal(r.scope, "project");
+  assert.equal(r.line, "Run tests with pytest -q.");
+});
+
+test("remember accepts the global scope", async () => {
+  const { s } = makeSession();
+  const r = await s.remember("global", "Always write tests first.");
+  assert.equal(r.scope, "global");
 });

@@ -4,10 +4,7 @@
 // forwards stderr to the log, checks schema_version and fails loudly on
 // mismatch. There is no other link between TS and Python.
 
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-
-const execFileAsync = promisify(execFile);
+import { spawn } from "node:child_process";
 
 export class MindGraphError extends Error {
   readonly exitCode: number | null;
@@ -20,7 +17,7 @@ export class MindGraphError extends Error {
 export interface ClientOptions {
   /** Path to the mindgraph binary (default "mindgraph" from PATH). */
   bin?: string;
-  /** Root of the MAIN repo (where .mindgraph/graph.json lives). */
+  /** Root of the MAIN repo being analyzed (its built graph.json lives in the tool's own storage root, not here). */
   dir: string;
 }
 
@@ -41,29 +38,41 @@ export class MindGraphClient {
 
   private async run(args: string[], input?: string): Promise<RunResult> {
     const fullArgs = [...args, "--dir", this.dir];
-    const res = await execFileAsync(this.bin, fullArgs, {
-      input: input ?? "",
-      maxBuffer: 256 * 1024 * 1024,
-      encoding: "utf8",
-    }).catch((err: any) => {
-      // exit 3 (boundary violation) still carries valid JSON on stdout.
-      if (err && typeof err.stdout === "string" && err.stdout.length > 0) {
-        return err as { stdout: string; stderr: string; code: number };
-      }
-      throw new MindGraphError(
-        err?.stderr || err?.message || String(err),
-        err?.code ?? null,
-      );
+    // NOTE: execFile's `input` option deadlocks on Node 26 (the child's stdin
+    // never receives EOF), so we drive stdin manually via spawn + end().
+    const child = spawn(this.bin, fullArgs, { stdio: ["pipe", "pipe", "pipe"] });
+
+    let stdout = "";
+    let stderr = "";
+    const maxBuffer = 256 * 1024 * 1024;
+    let stdoutOverflow = false;
+    let stderrOverflow = false;
+    child.stdout.on("data", (d: Buffer) => {
+      if (stdout.length + d.length <= maxBuffer) stdout += d.toString("utf8");
+      else stdoutOverflow = true;
+    });
+    child.stderr.on("data", (d: Buffer) => {
+      if (stderr.length + d.length <= maxBuffer) stderr += d.toString("utf8");
+      else stderrOverflow = true;
     });
 
-    const stdout: string = (res as any).stdout ?? "";
-    const stderr: string = (res as any).stderr ?? "";
-    const code: number = (res as any).code ?? 0;
+    const code: number = await new Promise((resolve, reject) => {
+      child.on("error", (err) => reject(err));
+      child.on("close", (c) => resolve(c ?? 0));
+      child.stdin.write(input ?? "");
+      child.stdin.end();
+    });
+
+    if (stdoutOverflow || stderrOverflow) {
+      throw new MindGraphError("mindgraph: output exceeded maxBuffer", code);
+    }
 
     let data: any;
     try {
       data = JSON.parse(stdout);
     } catch {
+      // exit 3 (boundary violation) still carries valid JSON on stdout — but a
+      // truly non-JSON stdout is an error.
       throw new MindGraphError(
         `mindgraph: invalid JSON on stdout: ${stdout.slice(0, 300)}`,
         code,
@@ -103,5 +112,13 @@ export class MindGraphClient {
     const args = ["verify", "--node", nodeId, "--diff", "-"];
     if (worktree) args.push("--worktree", worktree);
     return this.run(args, diff);
+  }
+
+  /** The agent's explicit ``remember`` tool (item 3b) — the only path that
+   * writes memory. Scope is project-wide, independent of the execution
+   * worktree. */
+  remember(scope: "global" | "project", line: string): Promise<any> {
+    return this.run(["remember", "--scope", scope, "--line", line, "--json"])
+      .then((r) => r.data);
   }
 }
