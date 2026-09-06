@@ -2,7 +2,7 @@ from cycle.b import beta
 
 
 def alpha() -> int:
-    """Узел цикла A."""
+    """Cycle node A."""
     return beta()
 
 

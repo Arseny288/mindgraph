@@ -4,7 +4,7 @@ CACHE = {}
 
 
 def hash_value(v: str) -> str:
-    """Хеширует значение."""
+    """Hashes the value."""
     return str(len(v))
 
 
