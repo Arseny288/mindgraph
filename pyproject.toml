@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "mindgraph"
 version = "1.0.0"
-description = "Смысловой оверлей поверх Python-репозитория: граф узлов в браузере."
+description = "A semantic overlay on top of a Python repository: a graph of nodes in the browser."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -13,13 +13,18 @@ authors = [{ name = "mindgraph" }]
 dependencies = [
     "openai>=1.0",
     "pathspec>=0.12",
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
 anthropic = ["anthropic>=0.40"]
+dev = ["pytest>=8"]
 
 [project.scripts]
 mindgraph = "mindgraph.cli:main"
 
 [tool.setuptools]
 packages = ["mindgraph"]
+
+[tool.setuptools.package-data]
+mindgraph = ["viewer/*", "viewer/dist/*", "_agent/*"]

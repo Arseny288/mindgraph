@@ -1,0 +1,8 @@
+{
+  "id": "create_outside",
+  "node": "Authentication",
+  "prompt": "Create a file app/utils.py with a helper() function.",
+  "control": false,
+  "crosses": "app/utils.py",
+  "smoke": true
+}

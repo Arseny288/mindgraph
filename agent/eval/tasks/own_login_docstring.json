@@ -1,0 +1,7 @@
+{
+  "id": "own_login_docstring",
+  "node": "Authentication",
+  "prompt": "Add a docstring to the login function in auth/login.py.",
+  "control": true,
+  "smoke": true
+}

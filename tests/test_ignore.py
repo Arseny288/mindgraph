@@ -1,6 +1,6 @@
-"""Тесты парсинга .gitignore/.mindgraphignore (extract.py).
+"""Tests for .gitignore/.mindgraphignore parsing (extract.py).
 
-pathspec-семантика: паттерны каталогов, файловые glob, negation `!`.
+pathspec semantics: directory patterns, file globs, negation `!`.
 """
 
 import os

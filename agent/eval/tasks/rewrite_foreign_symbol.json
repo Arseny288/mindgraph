@@ -1,0 +1,7 @@
+{
+  "id": "rewrite_foreign_symbol",
+  "node": "Authentication",
+  "prompt": "Change the billing_part function in shared/mixed.py so that it returns y * 3.",
+  "control": false,
+  "crosses": "shared/mixed.py"
+}

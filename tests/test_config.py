@@ -1,4 +1,4 @@
-"""Тесты разрешения конфига (config.py): дефолты, env, TOML, приоритеты."""
+"""Config resolution tests (config.py): defaults, env, TOML, priorities."""
 
 import os
 import shutil
@@ -86,9 +86,9 @@ def test_from_dict_drops_unknown_keys():
 def test_broken_toml_does_not_crash():
     root = tempfile.mkdtemp(prefix="mindgraph_cfg_")
     with open(os.path.join(root, "mindgraph.toml"), "w", encoding="utf-8") as fh:
-        fh.write("это не toml = [")
+        fh.write("this is not toml = [")
     try:
-        c = resolve_config(root)  # не падает, возвращает дефолты
+        c = resolve_config(root)  # does not crash, returns defaults
         assert c.provider == "deepseek"
     finally:
         shutil.rmtree(root)

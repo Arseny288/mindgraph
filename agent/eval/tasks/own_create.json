@@ -1,0 +1,6 @@
+{
+  "id": "own_create",
+  "node": "Authentication",
+  "prompt": "Create a file auth/helper.py with a ping() function that returns 'pong'.",
+  "control": true
+}

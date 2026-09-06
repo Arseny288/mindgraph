@@ -1,14 +1,14 @@
-"""llmcache.py — кэш LLM-ответов по хэшу промпта.
+"""llmcache.py — LLM response cache keyed by prompt hash.
 
-Ключ = ``sha256(provider, model, system_prompt, user_prompt)``. Промпты
-mindgraph детерминированы (``sort_keys=True`` в JSON-пейлоадах), поэтому один
-и тот же (провайдер, модель, граф) всегда даёт один ключ. Повторный прогон —
-в т.ч. платный ``--regroup`` на неизменном коде — берёт ответ из кэша и не
-ходит в API.
+Key = ``sha256(provider, model, system_prompt, user_prompt)``. mindgraph's
+prompts are deterministic (``sort_keys=True`` in JSON payloads), so the same
+(provider, model, graph) always yields the same key. A repeated run — including
+a paid ``--regroup`` on unchanged code — takes the answer from the cache and
+does not hit the API.
 
-Хранение: файл ``<key>.json`` в ``<cache_base>/llm/``. По умолчанию база —
-``~/.cache/mindgraph`` (см. ``mindgraph/config.py``); расширение ``~`` делает
-:func:`resolve_base`.
+Storage: a ``<key>.json`` file in ``<cache_base>/llm/``. The default base is
+``~/.cache/mindgraph`` (see ``mindgraph/config.py``); the ``~`` expansion is
+done by :func:`resolve_base`.
 """
 
 from __future__ import annotations
@@ -23,13 +23,13 @@ DEFAULT_CACHE_DIR = "~/.cache/mindgraph"
 
 
 def resolve_base(cache_dir: str | os.PathLike | None = None) -> Path:
-    """Каталог кэша LLM-ответов: ``expanduser(cache_dir)/llm``."""
+    """LLM-response cache directory: ``expanduser(cache_dir)/llm``."""
     d = os.path.expanduser(os.fspath(cache_dir or DEFAULT_CACHE_DIR))
     return Path(d) / "llm"
 
 
 def prompt_key(provider: str, model: str, system: str, user: str) -> str:
-    """Стабильный ключ по (провайдер, модель, system-промпт, user-промпт)."""
+    """Stable key from (provider, model, system prompt, user prompt)."""
     h = hashlib.sha256()
     for part in (provider, model or "", system, user):
         h.update(part.encode("utf-8"))
@@ -38,7 +38,7 @@ def prompt_key(provider: str, model: str, system: str, user: str) -> str:
 
 
 def load(base: Path, key: str) -> dict | None:
-    """Вернуть ``{"text", "usage"}`` из кэша, либо None (нет/битая запись)."""
+    """Return ``{"text", "usage"}`` from the cache, or None (missing/corrupt)."""
     path = base / f"{key}.json"
     if not path.exists():
         return None
@@ -53,7 +53,7 @@ def load(base: Path, key: str) -> dict | None:
 
 def save(base: Path, key: str, text: str, usage: dict,
          provider: str, model: str) -> None:
-    """Атомарно записать ответ в ``<base>/<key>.json``."""
+    """Atomically write the response to ``<base>/<key>.json``."""
     base.mkdir(parents=True, exist_ok=True)
     entry = {
         "key": key,

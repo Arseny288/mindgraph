@@ -1,0 +1,32 @@
+<!doctype html>
+<!--
+  This is a TEMPLATE — build.mjs generates viewer/index.html from it on every
+  build, substituting the content-hashed asset filenames and the build id.
+  Never hand-edit viewer/index.html directly; edit this file instead.
+-->
+<html lang="en" class="no-transition">
+<head>
+<meta charset="utf-8" />
+<title>mindgraph</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="mindgraph-build" content="5afe686-2026-09-06T02:18:38.016Z" />
+<link rel="stylesheet" href="/dist/reactflow.css" />
+<link rel="stylesheet" href="/dist/app.d42114c2d6.css" />
+<script>
+// item 4: suppress the theme transition on first paint (no fade-in on load).
+// Two rAFs so the class drops only after the first real frame is committed.
+requestAnimationFrame(() => requestAnimationFrame(() => {
+  document.documentElement.classList.remove("no-transition");
+}));
+// Caching hardening pass: print the build this page was served from, so a
+// "looks stale" report can tell in one glance whether it's the browser (this
+// line lags the terminal's on-boot print) or the build (both agree, edit not
+// yet made/deployed).
+console.log("[mindgraph] build 5afe686-2026-09-06T02:18:38.016Z");
+</script>
+</head>
+<body>
+<div id="root"></div>
+<script src="/dist/app.2ffc34f6a2.js"></script>
+</body>
+</html>

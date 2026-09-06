@@ -2,10 +2,10 @@ from common.utils import hash_value, CACHE
 
 
 class Invoice:
-    """Счёт на оплату."""
+    """A payment invoice."""
 
     def total(self) -> int:
-        """Возвращает сумму счёта."""
+        """Returns the invoice total."""
         return 0
 
     def signature(self) -> str:
@@ -13,18 +13,18 @@ class Invoice:
         return hash_value("invoice")
 
     def render(self) -> str:
-        """Печатает счёт."""
+        """Prints the invoice."""
         return str(self.total())
 
 
 class TaxInvoice(Invoice):
-    """Счёт с налогом."""
+    """An invoice with tax."""
 
     def total(self) -> int:
         return super().total() + 1
 
 
 def make_invoice() -> Invoice:
-    """Фабрика счёта — упоминает Invoice, но не вызывает его напрямую."""
+    """Invoice factory — mentions Invoice, but does not call it directly."""
     cls = Invoice
     return cls()

@@ -1,20 +1,20 @@
-"""Этап B2 — LLM-группировка узлов L1 в домены L0.
+"""Stage B2 — LLM grouping of L1 nodes into L0 domains.
 
-ОТДЕЛЬНЫЙ второй запрос к модели, полностью независимый от group.py:
-group.py и назначение символов по узлам L1 (§3 спеки) остаются нетронутыми
-— этот модуль их не импортирует для мутации и не трогает их файл.
+A SEPARATE second model request, fully independent of group.py: group.py and
+the symbol-to-L1-node assignment (§3 of the spec) stay untouched — this module
+does not import them for mutation and does not touch their file.
 
-На вход второму запросу идут ТОЛЬКО уже посчитанные узлы L1 (имя, summary,
-размеры) и рёбра между ними — списки символов НЕ передаются вообще (модель
-не должна ни видеть, ни тем более менять то, что уже решено на этапе B).
-Ответ модели проставляет каждому узлу L1 поле ``parent`` (id домена) и
-возвращает список доменов. :func:`assign_domains` — единственная точка
-мутации: она никогда не трогает ``node["symbols"]``, а вызывающая сторона
-(emit.py) проверяет это assert'ом до/после вызова (см. build_graph).
+The second request receives ONLY the already-computed L1 nodes (name, summary,
+sizes) and the edges between them — symbol lists are NOT passed at all (the
+model must neither see nor change what was already decided at stage B). The
+model's response sets a ``parent`` field (domain id) on each L1 node and
+returns the list of domains. :func:`assign_domains` is the single mutation
+point: it never touches ``node["symbols"]``, and the caller (emit.py) verifies
+this with an assert before/after the call (see build_graph).
 
-Если LLM недоступна (нет ключа/пакета) или ответ не парсится — тихий откат
-на один домен "Проект" со всеми узлами внутри (тот же принцип "никогда не
-падать целиком", что и в group.py/emit.py), с warning.
+If the LLM is unavailable (no key/package) or the response does not parse —
+silent fallback to a single "Project" domain containing all nodes (the same
+"never fail wholesale" principle as in group.py/emit.py), with a warning.
 """
 
 from __future__ import annotations
@@ -22,27 +22,27 @@ from __future__ import annotations
 import os
 import re
 
-# Чисто читающий импорт готовых констант/утилит group.py — сам файл group.py
-# этим модулем не меняется и не переоткрывается.
+# Read-only import of ready constants/utils from group.py — group.py itself is
+# not modified or reopened by this module.
 from . import llmcache
 from .group import (
     ANTHROPIC_MODEL, DEEPSEEK_BASE_URL, DEEPSEEK_MODEL, _parse_json_response,
 )
 
-UNASSIGNED_DOMAIN = "Проект"
+UNASSIGNED_DOMAIN = "Project"
 
-_DOMAIN_SYSTEM_PROMPT = """Сгруппируй узлы графа кода в 4-6 доменов верхнего уровня — по смысловой
-близости их назначения, не по алфавиту и не по размеру.
+_DOMAIN_SYSTEM_PROMPT = """Group the nodes of the code graph into 4-6 top-level domains — by the semantic
+closeness of their purpose, not alphabetically and not by size.
 
-Имена доменов — короткие, на русском, в терминах предметной области
-(например «Работа с данными», «Взаимодействие с пользователем»).
+Domain names — short, in English, in domain terms (e.g. "Data handling",
+"User interaction").
 
-Каждый узел из списка обязан попасть ровно в один домен.
+Every node in the list must be assigned to exactly one domain.
 
-Ответь СТРОГО JSON, без markdown-заграждений (```), без преамбулы и без
-пояснений до или после. Формат ответа:
+Answer STRICTLY in JSON, without markdown fences (```), without preamble and
+without explanations before or after. Response format:
 
-{"domains": [{"name": "Работа с данными", "nodes": ["Хранилище данных", "Модели"]}]}
+{"domains": [{"name": "Data handling", "nodes": ["Storage", "Models"]}]}
 """
 
 
@@ -52,8 +52,8 @@ def _slug(name: str) -> str:
 
 
 def _build_domain_user_prompt(nodes: list, node_edges: list) -> str:
-    """Только имена/summary/размеры узлов L1 и рёбра между ними — без единого
-    символа (см. docstring модуля)."""
+    """Only the L1 nodes' names/summary/sizes and the edges between them — not
+    a single symbol (see the module docstring)."""
     import json
     slim_nodes = [
         {"name": n["name"], "summary": n.get("summary", ""),
@@ -78,8 +78,8 @@ def _call_deepseek(system_prompt: str, user_prompt: str,
                    model: str | None = None) -> dict:
     key = os.environ.get("DEEPSEEK_API_KEY")
     if not key:
-        raise RuntimeError("DEEPSEEK_API_KEY не задан (ни аргументом, ни в окружении/.env)")
-    from openai import OpenAI  # ленивый импорт, как в group.py
+        raise RuntimeError("DEEPSEEK_API_KEY is not set (neither as an argument nor in env/.env)")
+    from openai import OpenAI  # lazy import, as in group.py
     client = OpenAI(api_key=key, base_url=DEEPSEEK_BASE_URL)
     resp = client.chat.completions.create(
         model=model or DEEPSEEK_MODEL,
@@ -87,7 +87,7 @@ def _call_deepseek(system_prompt: str, user_prompt: str,
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
-        max_tokens=2000,  # список узлов L1 (5-15 штук) на порядок меньше списка символов
+        max_tokens=2000,  # the L1 node list (5-15 items) is an order of magnitude smaller than the symbol list
         temperature=0,
         extra_body={"thinking": {"type": "disabled"}},
     )
@@ -108,7 +108,7 @@ def _call_deepseek(system_prompt: str, user_prompt: str,
 
 def _call_anthropic(system_prompt: str, user_prompt: str,
                     model: str | None = None) -> dict:
-    import anthropic  # ленивый импорт
+    import anthropic  # lazy import
     key = os.environ.get("ANTHROPIC_API_KEY")
     client = anthropic.Anthropic(api_key=key) if key else anthropic.Anthropic()
     resp = client.messages.create(
@@ -138,30 +138,30 @@ def _call_provider(provider_name: str, system_prompt: str, user_prompt: str,
         return _call_deepseek(system_prompt, user_prompt, model)
     if provider_name == "anthropic":
         return _call_anthropic(system_prompt, user_prompt, model)
-    raise ValueError(f"неизвестный провайдер {provider_name!r}")
+    raise ValueError(f"unknown provider {provider_name!r}")
 
 
 def _validate_domains(parsed, nodes: list, warnings: list) -> list | None:
-    """[{"name", "members": [node_name, ...]}] или None (откат на один домен)."""
+    """[{"name", "members": [node_name, ...]}] or None (fallback to one domain)."""
     valid_names = {n["name"] for n in nodes}
     raw_domains = parsed.get("domains") if isinstance(parsed, dict) else None
     if not isinstance(raw_domains, list) or not raw_domains:
-        warnings.append("ответ модели не содержит списка domains, откатываюсь на один домен")
+        warnings.append("model response has no domains list, falling back to one domain")
         return None
 
     result = []
     assigned = set()
     for rd in raw_domains:
         if not isinstance(rd, dict) or "name" not in rd:
-            warnings.append(f"пропущен некорректный домен в ответе модели: {rd!r}")
+            warnings.append(f"skipped malformed domain in model response: {rd!r}")
             continue
         members = []
         for name in rd.get("nodes", []):
             if name not in valid_names:
-                warnings.append(f"домен {rd['name']!r}: узел {name!r} не существует, отброшен")
+                warnings.append(f"domain {rd['name']!r}: node {name!r} does not exist, dropped")
                 continue
             if name in assigned:
-                warnings.append(f"узел {name!r} назначен более чем в один домен, оставлен в первом")
+                warnings.append(f"node {name!r} assigned to more than one domain, kept in the first")
                 continue
             members.append(name)
             assigned.add(name)
@@ -173,16 +173,16 @@ def _validate_domains(parsed, nodes: list, warnings: list) -> list | None:
         result.append({"name": UNASSIGNED_DOMAIN, "members": unassigned})
 
     if not result:
-        warnings.append("после валидации доменов не осталось ни одного, откатываюсь на один домен")
+        warnings.append("no domains left after validation, falling back to one domain")
         return None
     return result
 
 
 def _finalize(buckets: list, nodes: list) -> list:
-    """Проставить node["parent"] и вернуть итоговый массив domains для graph.json.
+    """Set node["parent"] and return the final domains array for graph.json.
 
-    Единственное поле, которое мутируется на узлах, — ``parent``.
-    ``node["symbols"]`` здесь никогда не читается и не пишется.
+    The only field mutated on the nodes is ``parent``.
+    ``node["symbols"]`` is never read or written here.
     """
     node_by_name = {n["name"]: n for n in nodes}
     out = []
@@ -197,15 +197,15 @@ def _finalize(buckets: list, nodes: list) -> list:
 def assign_domains(nodes: list, node_edges: list, provider_name: str = "deepseek",
                    no_llm: bool = False, cache_base=None,
                    model: str | None = None) -> dict:
-    """Оркестрация этапа B2. Мутирует ``nodes`` (добавляет ``parent``).
+    """Stage B2 orchestration. Mutates ``nodes`` (adds ``parent``).
 
-    ``cache_base`` — каталог кэша LLM-ответов; ``model`` — переопределение
-    дефолтной модели провайдера (иначе DEEPSEEK_MODEL/ANTHROPIC_MODEL).
+    ``cache_base`` — the LLM-response cache directory; ``model`` — an override
+    of the provider's default model (otherwise DEEPSEEK_MODEL/ANTHROPIC_MODEL).
 
-    Возвращает ``{"domains": [...], "warnings": [...], "usage": {...},
-    "raw_text": str}``. При отсутствии LLM/провайдера или невалидном ответе —
-    один домен :data:`UNASSIGNED_DOMAIN` на все узлы, без исключения (§1
-    спеки: никогда не падать целиком).
+    Returns ``{"domains": [...], "warnings": [...], "usage": {...},
+    "raw_text": str}``. When the LLM/provider is missing or the response is
+    invalid — a single :data:`UNASSIGNED_DOMAIN` for all nodes, without raising
+    (§1 of the spec: never fail wholesale).
     """
     warnings: list = []
     usage = _empty_usage()
@@ -224,10 +224,10 @@ def assign_domains(nodes: list, node_edges: list, provider_name: str = "deepseek
         if resp is None:
             try:
                 resp = _call_provider(provider_name, system, user, model)
-            except Exception as e:  # нет ключа, нет пакета, сетевая ошибка и т.п.
+            except Exception as e:  # no key, no package, network error, etc.
                 warnings.append(
-                    f"LLM-провайдер {provider_name!r} недоступен для доменов ({e}); "
-                    f"один домен {UNASSIGNED_DOMAIN!r} на все узлы")
+                    f"LLM provider {provider_name!r} unavailable for domains ({e}); "
+                    f"single domain {UNASSIGNED_DOMAIN!r} for all nodes")
                 resp = None
             if resp is not None and cache_base is not None:
                 llmcache.save(cache_base, cache_key, resp["text"], resp["usage"],

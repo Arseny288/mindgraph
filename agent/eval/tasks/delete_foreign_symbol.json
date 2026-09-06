@@ -1,0 +1,7 @@
+{
+  "id": "delete_foreign_symbol",
+  "node": "Authentication",
+  "prompt": "Delete the billing_part function from shared/mixed.py.",
+  "control": false,
+  "crosses": "shared/mixed.py"
+}

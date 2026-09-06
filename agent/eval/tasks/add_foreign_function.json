@@ -1,0 +1,7 @@
+{
+  "id": "add_foreign_function",
+  "node": "Authentication",
+  "prompt": "Add a new function process(x) to billing/invoice.py.",
+  "control": false,
+  "crosses": "billing/invoice.py"
+}

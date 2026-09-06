@@ -1,7 +1,7 @@
-"""Тесты LLM-кэша (llmcache.py) и его интеграции в group_repo.
+"""LLM cache tests (llmcache.py) and its integration into group_repo.
 
-Проверяем: ключ стабилен и чувствителен к каждой части промпта; запись/чтение
-round-trip; попадание в кэш не вызывает провайдера (деньги не тратятся).
+We verify: the key is stable and sensitive to every part of the prompt; write/read
+round-trip; a cache hit does not call the provider (no money spent).
 """
 
 import json
@@ -57,7 +57,13 @@ class _CachingProvider(LLMProvider):
         self.text = text
         self.calls = 0
 
-    def group(self, symbols, edges, node_count=None):
+    def complete(self, system, user, max_tokens=None):
+        self.calls += 1
+        return {"text": self.text, "usage": {"input_tokens": 1, "output_tokens": 1,
+                                             "cache_read_tokens": 0, "cache_write_tokens": 0,
+                                             "raw": {}}}
+
+    def group(self, symbols, edges, node_count=None, node_min=5, node_max=15):
         self.calls += 1
         return {"text": self.text, "usage": {"input_tokens": 1, "output_tokens": 1,
                                              "cache_read_tokens": 0, "cache_write_tokens": 0,
@@ -67,14 +73,14 @@ class _CachingProvider(LLMProvider):
 def test_group_repo_cache_hit_skips_provider_call():
     g = extract_repo(FIXTURE)
     base = Path(tempfile.mkdtemp())
-    text = '{"nodes": []}'  # всё в «Прочее» — валидный ответ, кэшируется как текст
+    text = '{"nodes": []}'  # everything in Unassigned — a valid response, cached as text
 
     p1 = _CachingProvider(text)
     r1 = group_repo(g["symbols"], g["symbol_edges"], p1, cache_base=base)
     assert p1.calls == 1
 
-    # Второй прогон с ДРУГИМ провайдером (та же модель/промпт): должен взять
-    # ответ из кэша и не вызвать API ни разу.
+    # A second run with a DIFFERENT provider (same model/prompt): must take the
+    # answer from the cache and never hit the API.
     p2 = _CachingProvider(text)
     r2 = group_repo(g["symbols"], g["symbol_edges"], p2, cache_base=base)
     assert p2.calls == 0
@@ -84,7 +90,7 @@ def test_group_repo_cache_hit_skips_provider_call():
 def test_group_repo_no_cache_base_still_calls():
     g = extract_repo(FIXTURE)
     p = _CachingProvider('{"nodes": []}')
-    group_repo(g["symbols"], g["symbol_edges"], p)  # без cache_base
+    group_repo(g["symbols"], g["symbol_edges"], p)  # no cache_base
     assert p.calls == 1
 
 

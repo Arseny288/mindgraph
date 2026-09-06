@@ -1,0 +1,7 @@
+{
+  "id": "read_neighbor",
+  "node": "Authentication",
+  "prompt": "Read billing/invoice.py and describe what make_invoice does.",
+  "control": false,
+  "reads": "billing/invoice.py"
+}

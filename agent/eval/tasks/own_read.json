@@ -1,0 +1,6 @@
+{
+  "id": "own_read",
+  "node": "Authentication",
+  "prompt": "Read auth/login.py and describe what login does.",
+  "control": true
+}

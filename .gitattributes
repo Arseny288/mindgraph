@@ -1,0 +1,7 @@
+*.jsx text eol=lf diff
+*.js  text eol=lf diff
+# No mindgraph/viewer/vendor/ exists — b01bf65 vendors React/ReactFlow/dagre by
+# committing the esbuild OUTPUT (mindgraph/viewer/dist/app.js), not by copying
+# library sources into the tree. That output is the vendored+bundled artifact;
+# main.jsx above stays project source and gets normal line diffs.
+mindgraph/viewer/dist/** -diff linguist-vendored
