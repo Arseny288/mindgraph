@@ -21,20 +21,20 @@ FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                        "fixtures", "sample_repo")
 
 # The layout: authentication + billing are really grouped, common is split
-# (hash_value/CACHE — into "Общее", normalize intentionally left without a node),
+# (hash_value/CACHE — into "Common", normalize intentionally left without a node),
 # cycle.* is also left without a node — three symbols must go to UNASSIGNED_NODE.
 FAKE_RESPONSE = {
     "nodes": [
-        {"name": "Аутентификация", "summary": "Вход и токены.",
+        {"name": "Authentication", "summary": "Login and tokens.",
          "symbols": ["auth.tokens.issue", "auth.tokens.refresh",
                     "auth.login.verify_token", "auth.login.login"]},
-        {"name": "Биллинг", "summary": "Счета и налоги.",
+        {"name": "Billing", "summary": "Invoices and taxes.",
          "symbols": ["billing.invoice.Invoice", "billing.invoice.Invoice.total",
                     "billing.invoice.Invoice.signature", "billing.invoice.Invoice.render",
                     "billing.invoice.TaxInvoice", "billing.invoice.TaxInvoice.total",
                     "billing.invoice.make_invoice",
                     "nonexistent.symbol"]},  # invalid id — must be dropped
-        {"name": "Общее", "summary": "Общая инфраструктура.",
+        {"name": "Common", "summary": "Shared infrastructure.",
          "symbols": ["common.utils.hash_value", "common.utils.CACHE",
                     "auth.tokens.issue"]},  # duplicate issue — must stay in the first node
     ]
@@ -79,11 +79,11 @@ def test_parse_json_repairs_merged_node_objects():
     # Observed in practice (DeepSeek, temperature=0): the model forgets the
     # `}, {` between array elements and glues N nodes into one JSON object with
     # duplicate keys. A plain dict(pairs) would silently keep only the last node
-    # ("Биллинг") — the other 8 would vanish without a parse error.
+    # ("Billing") — the other 8 would vanish without a parse error.
     merged = (
         '{"nodes": [{'
-        '"name": "Аутентификация", "summary": "Вход.", "symbols": ["a.login"], '
-        '"name": "Биллинг", "summary": "Счета.", "symbols": ["b.invoice"]'
+        '"name": "Authentication", "summary": "Login.", "symbols": ["a.login"], '
+        '"name": "Billing", "summary": "Invoices.", "symbols": ["b.invoice"]'
         '}]}'
     )
     parsed, err = _parse_json_response(merged)
@@ -93,8 +93,8 @@ def test_parse_json_repairs_merged_node_objects():
     warnings = []
     nodes = _validate_and_bucket(parsed, {"a.login", "b.invoice"}, warnings)
     by_name = {n["name"]: n for n in nodes}
-    assert by_name["Аутентификация"]["symbols"] == ["a.login"]
-    assert by_name["Биллинг"]["symbols"] == ["b.invoice"]
+    assert by_name["Authentication"]["symbols"] == ["a.login"]
+    assert by_name["Billing"]["symbols"] == ["b.invoice"]
     assert any("glued" in w for w in warnings)
 
 
@@ -108,7 +108,7 @@ def test_parse_json_does_not_touch_normal_duplicate_free_objects():
 
 
 def test_parse_json_unparseable_reports_error():
-    parsed, err = _parse_json_response("это не json")
+    parsed, err = _parse_json_response("this is not json")
     assert parsed is None
     assert err is not None
 
@@ -120,10 +120,10 @@ def test_validate_and_bucket_drops_invalid_and_dedups():
     nodes = _validate_and_bucket(FAKE_RESPONSE, real_ids, warnings)
 
     by_name = {n["name"]: n for n in nodes}
-    assert "nonexistent.symbol" not in by_name["Биллинг"]["symbols"]
+    assert "nonexistent.symbol" not in by_name["Billing"]["symbols"]
     # the duplicated issue stays only in the first node where it was seen
-    assert "auth.tokens.issue" in by_name["Аутентификация"]["symbols"]
-    assert "auth.tokens.issue" not in by_name["Общее"]["symbols"]
+    assert "auth.tokens.issue" in by_name["Authentication"]["symbols"]
+    assert "auth.tokens.issue" not in by_name["Common"]["symbols"]
     assert any("nonexistent.symbol" in w for w in warnings)
     assert any("issue" in w and "more than one" in w for w in warnings)
 
@@ -145,11 +145,11 @@ def test_assign_synthetic_modules_majority_vote():
     _assign_synthetic_modules(nodes, g["symbols"])
     m = node_map(nodes)
 
-    assert m["auth.tokens.<module>"] == "Аутентификация"
-    assert m["auth.login.<module>"] == "Аутентификация"
-    assert m["billing.invoice.<module>"] == "Биллинг"
-    # common.utils.<module>: hash_value+CACHE (Общее, 2) > normalize (Unassigned, 1)
-    assert m["common.utils.<module>"] == "Общее"
+    assert m["auth.tokens.<module>"] == "Authentication"
+    assert m["auth.login.<module>"] == "Authentication"
+    assert m["billing.invoice.<module>"] == "Billing"
+    # common.utils.<module>: hash_value+CACHE (Common, 2) > normalize (Unassigned, 1)
+    assert m["common.utils.<module>"] == "Common"
     # cycle.*.<module>: the file's only real symbol went to Unassigned
     assert m["cycle.a.<module>"] == UNASSIGNED_NODE
     assert m["cycle.b.<module>"] == UNASSIGNED_NODE
@@ -192,7 +192,7 @@ def test_group_repo_end_to_end_with_fake_provider():
 
 def test_group_repo_unparseable_response_falls_back_to_all_unassigned():
     g = _graph()
-    provider = FakeProvider(text="не json вообще")
+    provider = FakeProvider(text="not json at all")
     result = group_repo(g["symbols"], g["symbol_edges"], provider)
 
     assert any("parse" in w for w in result["warnings"])
@@ -207,8 +207,8 @@ def test_group_repo_unparseable_response_falls_back_to_all_unassigned():
 
 
 def test_semantic_shared_ratio_via_node_map():
-    # Общее holds both hash_value and CACHE, but their real callers (issue,
-    # signature) sit in different nodes (Аутентификация/Биллинг) -> shared.
+    # Common holds both hash_value and CACHE, but their real callers (issue,
+    # signature) sit in different nodes (Authentication/Billing) -> shared.
     g = _graph()
     nodes = _validate_and_bucket(FAKE_RESPONSE,
                                  {s["id"] for s in g["symbols"] if not s.get("synthetic")}, [])
@@ -218,7 +218,7 @@ def test_semantic_shared_ratio_via_node_map():
     s = summarize_by_node(g["symbols"], g["symbol_edges"], m)
     assert s["shared_ratio"] > 0
     hash_value_owners = s["owners"]["common.utils.hash_value"]["owners"]
-    assert set(hash_value_owners) == {"Аутентификация", "Биллинг"}
+    assert set(hash_value_owners) == {"Authentication", "Billing"}
 
 
 def _run():

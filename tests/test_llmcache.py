@@ -73,7 +73,7 @@ class _CachingProvider(LLMProvider):
 def test_group_repo_cache_hit_skips_provider_call():
     g = extract_repo(FIXTURE)
     base = Path(tempfile.mkdtemp())
-    text = '{"nodes": []}'  # everything in «Прочее» — a valid response, cached as text
+    text = '{"nodes": []}'  # everything in Unassigned — a valid response, cached as text
 
     p1 = _CachingProvider(text)
     r1 = group_repo(g["symbols"], g["symbol_edges"], p1, cache_base=base)

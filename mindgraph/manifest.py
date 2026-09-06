@@ -117,6 +117,29 @@ def load(root: str) -> list:
     return nodes
 
 
+def save(root: str, nodes: list) -> str:
+    """Write the manifest. STUDIO.md §10: a user-named area becomes truth in
+    ``.mindvibe/nodes.yaml`` — pinned mechanically on the next scan. Returns
+    the written path."""
+    p = manifest_path(root)
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    data = {"nodes": [{
+        "id": n["id"], "title": n["title"],
+        "own_paths": [str(x) for x in (n.get("own_paths") or [])],
+    } for n in nodes]}
+    with open(p, "w", encoding="utf-8") as fh:
+        yaml.safe_dump(data, fh, sort_keys=False, allow_unicode=True)
+    return p
+
+
+def add_node(root: str, node: dict) -> list:
+    """Append one manifest node (id/title/own_paths), keeping the rest."""
+    nodes = [n for n in load(root) if n["id"] != node["id"]]
+    nodes.append(node)
+    save(root, nodes)
+    return nodes
+
+
 def _spec(own_paths: list):
     if pathspec is None:
         return None

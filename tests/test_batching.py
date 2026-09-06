@@ -2,7 +2,7 @@
 
 No network: a fake provider. We verify deterministic splitting by module, the
 "batches + merge via a second request" path itself, and a partial batch failure
-(the symbols of a failed batch go to «Прочее», the rest keeps working).
+(the symbols of a failed batch go to Unassigned, the rest keeps working).
 """
 
 import json
@@ -36,7 +36,7 @@ class _BatchingProvider(LLMProvider):
     def group(self, symbols, edges, node_count=None, node_min=5, node_max=15):
         self.group_calls += 1
         if self.fail_when and any(self.fail_when(s["id"]) for s in symbols):
-            return {"text": "не json", "usage": _USAGE}
+            return {"text": "not json", "usage": _USAGE}
         by_file = {}
         for s in symbols:
             by_file.setdefault(s["file"], []).append(s["id"])
@@ -48,11 +48,11 @@ class _BatchingProvider(LLMProvider):
     def complete(self, system, user, max_tokens=None):
         self.complete_calls += 1
         if self.merge == "invalid":
-            return {"text": "не json", "usage": _USAGE}
+            return {"text": "not json", "usage": _USAGE}
         if self.merge == "all":
             refs = [n["ref"] for n in json.loads(user)["nodes"]]
             return {"text": json.dumps(
-                {"nodes": [{"name": "Всё", "summary": "", "nodes": refs}]},
+                {"nodes": [{"name": "All", "summary": "", "nodes": refs}]},
                 ensure_ascii=False), "usage": _USAGE}
         # merge="none": leave the nodes as-is (one final node per ref)
         refs = [n["ref"] for n in json.loads(user)["nodes"]]
@@ -88,10 +88,10 @@ def test_group_repo_batches_and_merges():
 
     from mindgraph.group import node_map
     m = node_map(result["nodes"])
-    # every real symbol is assigned (the "Всё" merge collected all batches)
+    # every real symbol is assigned (the "All" merge collected all batches)
     assert set(real_ids) <= set(m)
     for sid in real_ids:
-        assert m[sid] == "Всё"
+        assert m[sid] == "All"
 
 
 def test_group_repo_batching_deterministic_across_runs():
@@ -111,8 +111,8 @@ def test_partial_batch_failure_is_not_fatal():
     real_ids = {s["id"] for s in g["symbols"] if not s.get("synthetic")}
 
     # The batch containing cycle.* fails; together with it the same batch holds
-    # common.utils.* — their symbols also go to «Прочее». The rest are grouped
-    # and merged into «Всё» as usual.
+    # common.utils.* — their symbols also go to Unassigned. The rest are grouped
+    # and merged into "All" as usual.
     p = _BatchingProvider(merge="all", fail_when=lambda sid: sid.startswith("cycle."))
     result = group_repo(g["symbols"], g["symbol_edges"], p, batch_max=5)
 
@@ -126,5 +126,5 @@ def test_partial_batch_failure_is_not_fatal():
     for sid in failed:
         assert m[sid] == UNASSIGNED_NODE
     for sid in ok_ids:
-        assert m[sid] == "Всё"
+        assert m[sid] == "All"
     assert any("batch" in w for w in result["warnings"])

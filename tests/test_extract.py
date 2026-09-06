@@ -72,7 +72,7 @@ def test_symbol_fields():
     by_id = {s["id"]: s for s in _graph()["symbols"]}
     issue = by_id["auth.tokens.issue"]
     assert issue["sig"] == "issue(user_id: int) -> str"
-    assert issue["doc"] == "Выдаёт токен для пользователя."
+    assert issue["doc"] == "Issues a token for the user."
     assert issue["file"] == "auth/tokens.py"
     assert by_id["common.utils.normalize"]["doc"] is None
     assert by_id["billing.invoice.Invoice"]["sig"] == "class Invoice"

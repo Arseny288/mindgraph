@@ -54,6 +54,29 @@ def test_manifest_load(tmp_path):
                       "own_paths": ["auth/**"]}]
 
 
+def test_manifest_save_roundtrip(tmp_path):
+    root = _repo_with_manifest(tmp_path)
+    nodes = manifest.load(root)
+    nodes.append({"id": "comms", "title": "Comms", "own_paths": ["app/comms/**"]})
+    path = manifest.save(root, nodes)
+    assert path == os.path.join(root, ".mindvibe", "nodes.yaml")
+    assert manifest.load(root) == nodes
+
+
+def test_manifest_add_node_keeps_rest_and_dedupes(tmp_path):
+    root = _repo_with_manifest(tmp_path)
+    manifest.add_node(root, {"id": "comms", "title": "Comms",
+                             "own_paths": ["app/x.py"]})
+    ids = [n["id"] for n in manifest.load(root)]
+    assert ids == ["myauth", "comms"]
+    # Same id replaces, does not duplicate.
+    manifest.add_node(root, {"id": "myauth", "title": "Auth2",
+                             "own_paths": ["auth/**"]})
+    out = manifest.load(root)
+    assert len(out) == 2
+    assert next(n for n in out if n["id"] == "myauth")["title"] == "Auth2"
+
+
 def test_manifest_preassign(tmp_path):
     root = _repo_with_manifest(tmp_path)
     from mindgraph.extract import extract_repo
