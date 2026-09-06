@@ -1,19 +1,19 @@
-// theme.js — цвета и мелкие визуальные утилиты.
+// theme.js — colors and small visual utilities.
 //
-// Единственный источник цвета во всём интерфейсе — домен (L0). Цвет узла L1
-// и символа L2 не считается заново по их собственному имени — он наследуется
-// от родительского домена (см. colorForItem в main.jsx). colorForName ниже
-// вызывается ровно один раз на домен — детерминированный хэш имени домена
-// mod длина палитры, чтобы один и тот же домен между прогонами вьюера
-// всегда получал один и тот же цвет.
+// The single source of color in the whole interface is the domain (L0). The
+// color of an L1 node or L2 symbol is NOT recomputed from its own name — it is
+// inherited from the parent domain (see colorForItem in main.jsx). colorForName
+// below is called exactly once per domain — a deterministic hash of the domain
+// name mod the palette length, so the same domain always gets the same color
+// across viewer runs.
 
 export const PALETTE = [
-  "#B8563A", // терракота
-  "#C99A2E", // охра
-  "#6B8CAE", // пыльный синий
-  "#7A9A6B", // шалфей
-  "#9B6B8C", // сливовый
-  "#4E8B84", // тёмная бирюза
+  "#B8563A", // terracotta
+  "#C99A2E", // ochre
+  "#6B8CAE", // dusty blue
+  "#7A9A6B", // sage
+  "#9B6B8C", // plum
+  "#4E8B84", // dark teal
 ];
 
 export function colorForName(name) {
